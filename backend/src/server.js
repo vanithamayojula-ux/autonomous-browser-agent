@@ -35,7 +35,7 @@ function sanitizeQuery(rawObjective) {
   clean = clean.replace(/^(?:search\s+google\s+for|search\s+for|search|find|go\s+to|open)\s+/i, "");
   clean = clean.trim() || rawObjective.replace(/["']/g, "").trim();
 
-  // Enhance numeric budget queries (e.g., "laptops under 70000" -> "laptops under 70000 in India INR")
+  // Enhance numeric budget queries (e.g. "laptops under 50000" -> "laptops under 50000 in India INR")
   if (/\b(?:laptop|laptops|phone|phones|mobile|pc)\b/i.test(clean) && /\b\d{4,6}\b/.test(clean) && !/\b(in india|in usa|usd|inr|rs)\b/i.test(clean)) {
     clean += " in India INR";
   }
@@ -55,7 +55,6 @@ function isRelevantResult(title, snippet, query) {
   const combined = (title + " " + snippet).toLowerCase();
   const qLower = query.toLowerCase();
 
-  // If query relates to laptops/computers, mandate laptop/tech domain keywords
   if (qLower.includes("laptop") || qLower.includes("notebook") || qLower.includes("computer")) {
     const laptopKeywords = [
       "laptop", "notebook", "pc", "macbook", "asus", "hp", "lenovo", "dell", 
@@ -109,7 +108,7 @@ async function extractDuckDuckGo(page, query) {
     const rows = document.querySelectorAll('.result');
 
     rows.forEach((row) => {
-      if (items.length >= 8) return;
+      if (items.length >= 6) return;
       const titleEl = row.querySelector('.result__title a, .result__a');
       const snippetEl = row.querySelector('.result__snippet');
       const urlEl = row.querySelector('.result__url');
@@ -149,7 +148,7 @@ async function extractBing(page, query) {
     const rows = document.querySelectorAll('.b_algo');
 
     rows.forEach((row) => {
-      if (items.length >= 8) return;
+      if (items.length >= 6) return;
       const titleEl = row.querySelector('h2 a');
       const snippetEl = row.querySelector('.b_caption p, p, .b_algoSub');
 
@@ -168,77 +167,7 @@ async function extractBing(page, query) {
   });
 }
 
-// AI Synthesizer Service
-async function generateAISynthesis(query, items, pageContent = '') {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY;
-
-  const itemDetails = items
-    .map((item, idx) => `${idx + 1}. Title: ${item.title}\n   Link: ${item.link}\n   Snippet: ${item.snippet}`)
-    .join('\n\n');
-
-  const promptText = `
-You are an expert AI research assistant. Synthesize a comprehensive, professional, well-structured guide answering the user's objective based on the search data below.
-
-USER OBJECTIVE:
-"${query}"
-
-SEARCH DATA:
-${itemDetails}
-
-EXTRACTED PAGE CONTENT:
-${pageContent.slice(0, 3000)}
-
-INSTRUCTIONS:
-1. Provide a clear, natural-language executive summary.
-2. Group the top findings logically (e.g. for products/laptops, list top models with key specs, estimated prices, and target audience; for topics, provide key steps or components).
-3. Use markdown formatting with clear headings, bullet points, bold text, and clickable link citations.
-4. DO NOT return raw code or Japanese/Spanish/foreign text. Deliver a high-value answer directly addressing the user's request.
-`;
-
-  if (apiKey) {
-    try {
-      if (process.env.GEMINI_API_KEY) {
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents: [{ parts: [{ text: promptText }] }] })
-          }
-        );
-        const data = await res.json();
-        const aiText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (aiText) return aiText;
-      } else if (process.env.OPENAI_API_KEY) {
-        const res = await fetch('https://api.openai.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-          },
-          body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            messages: [{ role: 'system', content: promptText }]
-          })
-        });
-        const data = await res.json();
-        const aiText = data?.choices?.[0]?.message?.content;
-        if (aiText) return aiText;
-      }
-    } catch (e) {
-      console.warn('AI API synthesis error, using expert rule-based synthesizer:', e.message);
-    }
-  }
-
-  // Expert Intelligent Synthesis Engine (Fallback if no API key)
-  const listItems = items
-    .map((item, i) => `### ${i + 1}. [${item.title}](${item.link})\n**Key Insights:** ${item.snippet || 'Comprehensive guide and specifications.'}`)
-    .join('\n\n');
-
-  return `## Executive Summary for "${query}"\n\nBased on real-time web analysis across top domain sources, here is the structured synthesis:\n\n${listItems}\n\n---\n\n### 💡 Recommendations & Next Steps\n- Review individual product specifications and user benchmarks before purchase.\n- Verify current prices and warranty details on official retail platforms.`;
-}
-
-// Shared task execution logic
+// Shared Task Execution Handler
 async function handleTaskExecution(req, res) {
   const rawQuery = req.body?.query || req.body?.objective;
 
@@ -250,26 +179,14 @@ async function handleTaskExecution(req, res) {
   }
 
   const cleanQuery = sanitizeQuery(rawQuery);
-  const startTime = Date.now();
-  const logs = [];
-
-  const addLog = (action, detail, status = "SUCCESS") => {
-    logs.push({
-      timestamp: new Date().toISOString(),
-      stepIndex: logs.length + 1,
-      totalSteps: 4,
-      action,
-      status,
-      detail
-    });
-  };
+  const steps = [];
 
   let browser = null;
 
   try {
     console.log(`[Execute Task] Raw: "${rawQuery}" -> Clean Query: "${cleanQuery}"`);
 
-    addLog("BROWSER_INIT", "Launching Playwright Chromium engine with English locale...");
+    steps.push("Initialized browser engine with stealth headers");
     browser = await launchBrowserSafely();
 
     const context = await browser.newContext({
@@ -285,10 +202,10 @@ async function handleTaskExecution(req, res) {
 
     const page = await context.newPage();
     let results = [];
-    let engineUsed = "DuckDuckGo (EN)";
+    let engineUsed = "DuckDuckGo";
 
-    // 1. DuckDuckGo Extractor
-    addLog("extract_duckduckgo", `Searching DuckDuckGo (en-US) for: "${cleanQuery}"`);
+    // Attempt 1: DuckDuckGo Extractor
+    steps.push(`Navigated to search engine for query: "${cleanQuery}"`);
     try {
       const rawDd = await extractDuckDuckGo(page, cleanQuery);
       results = rawDd.filter(r => isEnglishResult(r.title, r.snippet) && isRelevantResult(r.title, r.snippet, cleanQuery));
@@ -296,10 +213,10 @@ async function handleTaskExecution(req, res) {
       console.warn(`DuckDuckGo extractor warning: ${e.message}`);
     }
 
-    // 2. Fallback Bing Extractor
+    // Attempt 2: Fallback to Bing Extractor if zero results
     if (!results || results.length === 0) {
-      engineUsed = "Bing (EN)";
-      addLog("fallback_bing", `Switching to Bing (en-US) for English search results...`);
+      engineUsed = "Bing";
+      steps.push("Primary engine returned 0 items. Triggered Bing search fallback...");
       try {
         const rawBing = await extractBing(page, cleanQuery);
         results = rawBing.filter(r => isEnglishResult(r.title, r.snippet) && isRelevantResult(r.title, r.snippet, cleanQuery));
@@ -309,45 +226,25 @@ async function handleTaskExecution(req, res) {
     }
 
     results = results || [];
-
-    // 3. Deep Extraction: Visit top English result link to gather article body content
-    let topPageContent = '';
-    if (results.length > 0 && results[0].link) {
-      try {
-        addLog("deep_extract", `Visiting top result for deep content analysis: ${results[0].title}`);
-        await page.goto(results[0].link, { waitUntil: "domcontentloaded", timeout: 10000 });
-        const bodyText = await page.textContent("body");
-        topPageContent = (bodyText || '').replace(/\s+/g, ' ').trim().slice(0, 3000);
-      } catch (e) {
-        console.warn(`Deep page extraction skipped: ${e.message}`);
-      }
-    }
-
-    // 4. Generate AI Natural-Language Synthesis
-    addLog("ai_synthesis", "Generating structured natural-language response...");
-    const aiSummary = await generateAISynthesis(cleanQuery, results, topPageContent);
-
-    addLog("SUCCESS", `Execution finished in ${Date.now() - startTime}ms`);
+    steps.push(`Extracted ${results.length} clean structured search items via ${engineUsed}`);
 
     return res.status(200).json({
       success: true,
       query: cleanQuery,
       engine: engineUsed,
-      resultsCount: results.length,
       results,
-      summary: aiSummary,
-      result: `Successfully analyzed "${cleanQuery}". Top result: ${results[0]?.title || 'Complete'}`,
-      logs
+      steps,
+      result: `Found ${results.length} structured results for "${cleanQuery}"`
     });
   } catch (err) {
     console.error(`[Execution Error]: ${err.message}`);
-    addLog("FAILED", `Error: ${err.message}`, "FAILED");
+    steps.push(`Execution error: ${err.message}`);
     return res.status(500).json({
       success: false,
       query: cleanQuery || rawQuery,
       results: [],
-      error: err.message,
-      logs
+      steps,
+      error: err.message
     });
   } finally {
     if (browser) {
