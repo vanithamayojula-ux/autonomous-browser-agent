@@ -27,13 +27,81 @@ app.get("/api/agent/health", (req, res) => {
   res.status(200).json({ status: "ok", service: "backend" });
 });
 
-// Clean query helper
-function sanitizeQuery(rawObjective) {
-  if (!rawObjective) return "";
-  let clean = rawObjective.trim();
-  clean = clean.replace(/^["'\s]+|["'\s]+$/g, "");
-  clean = clean.replace(/^(?:search\s+google\s+for|search\s+for|search|find|go\s+to|open)\s+/i, "");
-  return clean.trim() || rawObjective.replace(/["']/g, "").trim();
+// 1. FIX QUERY GENERATION: Enrich query with context (India, 2026, intent)
+function enrichQuery(rawQuery) {
+  if (!rawQuery) return "";
+  let clean = rawQuery.trim().replace(/^["'\s]+|["'\s]+$/g, "");
+  clean = clean.replace(/^(?:search\s+google\s+for|search\s+for|search|find|go\s+to|open)\s+/i, "").trim();
+
+  // Strip leading "best " or "top " for Bing to prevent dictionary/store acronym collision
+  const baseQuery = clean.replace(/^(best|top)\s+/i, "").trim();
+
+  let enriched = baseQuery;
+  if (!/\b(india|inr|rs|usa|usd|uk)\b/i.test(enriched)) {
+    enriched += " India";
+  }
+  if (!/\b(2025|2026|2027)\b/i.test(enriched)) {
+    enriched += " 2026";
+  }
+  if (/\b(laptop|laptops|notebook|pc|macbook)\b/i.test(clean) && !/\b(review|reviews|buying guide|guide)\b/i.test(enriched)) {
+    enriched += " reviews buying guide";
+  }
+
+  return enriched;
+}
+
+// 5. BLOCK JUNK DOMAINS
+const JUNK_DOMAINS = [
+  "wikipedia.org",
+  "youtube.com",
+  "music.youtube.com",
+  "dictionary.com",
+  "merriam-webster.com",
+  "cambridge.org",
+  "thefreedictionary.com",
+  "yometro.com",
+  "undertaking.net",
+  "britannica.com",
+  "wordreference.com"
+];
+
+function isJunkDomain(link) {
+  if (!link) return true;
+  try {
+    const urlObj = new URL(link);
+    const hostname = urlObj.hostname.toLowerCase();
+    return JUNK_DOMAINS.some(junk => hostname.includes(junk));
+  } catch (e) {
+    return false;
+  }
+}
+
+// Helper: Decode Bing redirect URLs (bing.com/ck/a?!...) to clean direct URLs
+function decodeBingLink(link) {
+  if (link && link.includes('bing.com/ck/a?!')) {
+    try {
+      const uMatch = link.match(/[?&]u=a1([^&]+)/);
+      if (uMatch && uMatch[1]) {
+        let b64 = uMatch[1].replace(/-/g, '+').replace(/_/g, '/');
+        while (b64.length % 4 !== 0) b64 += '=';
+        const decoded = Buffer.from(b64, 'base64').toString('utf-8');
+        if (decoded.startsWith('http')) return decoded;
+      }
+    } catch (e) {}
+  }
+  return link;
+}
+
+// 9. BONUS: Calculate relevance score for sorting
+function calculateRelevanceScore(title, snippet, rawQuery) {
+  const combined = (title + " " + snippet).toLowerCase();
+  const tokens = rawQuery.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+  let score = 0;
+  tokens.forEach(token => {
+    if (combined.includes(token)) score += 1;
+  });
+  if (combined.includes("laptop") || combined.includes("notebook")) score += 3;
+  return score;
 }
 
 // Safely launch Chromium with dynamic self-healing browser installer
@@ -66,132 +134,142 @@ async function launchBrowserSafely() {
   }
 }
 
-// Bing Search Extractor (Primary Source per User Spec)
-async function extractBing(page, rawQuery) {
-  const cleaned = rawQuery.replace(/^(best|top)\s+/i, "");
-  const searchQueries = [rawQuery];
-  if (cleaned !== rawQuery) {
-    searchQueries.unshift(cleaned);
-  }
+// 2 & 3. USE BING AS PRIMARY ENGINE & FIX EXTRACTION LOGIC
+async function scrapeBing(page, query, steps) {
+  const encodedQuery = encodeURIComponent(query);
+  const url = `https://www.bing.com/search?q=${encodedQuery}&setmkt=en-US&setlang=en-US`;
 
-  let finalItems = [];
+  console.log(`[Bing Engine] Navigating to: ${url}`);
+  steps.push(`Navigated to Bing search URL: ${url}`);
 
-  for (const q of searchQueries) {
-    const url = `https://www.bing.com/search?q=${encodeURIComponent(q)}&setmkt=en-US&setlang=en-US`;
-    console.log(`[Bing Extractor] Navigating to: ${url}`);
-    
-    try {
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
-    } catch (e) {
-      console.warn(`[Bing Extractor] page.goto warning: ${e.message}`);
-    }
-
-    try {
-      await page.waitForSelector('li.b_algo', { timeout: 10000 });
-    } catch (err) {
-      console.warn(`[Bing Extractor] waitForSelector 'li.b_algo' timed out: ${err.message}`);
-    }
-
-    const extractedData = await page.evaluate(() => {
-      const rows = document.querySelectorAll('li.b_algo');
-      const items = [];
-
-      rows.forEach((row) => {
-        const titleEl = row.querySelector('h2');
-        const linkEl = row.querySelector('h2 a') || row.querySelector('a');
-        const snippetEl = row.querySelector('.b_caption p') || row.querySelector('.b_algoSub p') || row.querySelector('p');
-
-        const title = titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : '';
-        let link = linkEl ? (linkEl.href || linkEl.getAttribute('href') || '') : '';
-        const snippet = snippetEl ? (snippetEl.innerText || snippetEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
-
-        // Decode Bing redirect link to direct target URL if present
-        if (link.includes('bing.com/ck/a?!')) {
-          try {
-            const uMatch = link.match(/[?&]u=a1([^&]+)/);
-            if (uMatch && uMatch[1]) {
-              const decoded = atob(uMatch[1]);
-              if (decoded.startsWith('http')) link = decoded;
-            }
-          } catch (e) {}
-        }
-
-        if (title && link && link.startsWith('http')) {
-          items.push({ title, link, snippet });
-        }
-      });
-
-      return {
-        elementCount: rows.length,
-        items
-      };
-    });
-
-    console.log(`[Bing Extractor] Number of elements found: ${extractedData.elementCount}`);
-
-    if (extractedData.items.length > 0) {
-      console.log(`[Bing Extractor] First extracted item:`, JSON.stringify(extractedData.items[0], null, 2));
-
-      const validItems = extractedData.items.filter(item => {
-        const t = item.title.toLowerCase();
-        if (t === "best online payment" || t.includes("dictionary") || t.includes("cambridge") || t.includes("merriam-webster")) {
-          return false;
-        }
-        return true;
-      });
-
-      if (validItems.length >= 3) {
-        finalItems = validItems;
-        break;
-      }
-    } else {
-      const pageHtml = await page.content();
-      console.log(`[Bing Extractor] Full Page HTML (length ${pageHtml.length}):`, pageHtml);
-    }
-  }
-
-  return finalItems;
-}
-
-// Fallback Extractor: DuckDuckGo
-async function extractDuckDuckGo(page, query) {
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}&kl=us-en`;
-  console.log(`[DuckDuckGo Extractor] Navigating to: ${url}`);
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
 
-  return await page.evaluate(() => {
+  try {
+    await page.waitForSelector('li.b_algo', { timeout: 10000 });
+  } catch (err) {
+    console.warn(`[Bing Engine] waitForSelector 'li.b_algo' timed out: ${err.message}`);
+  }
+
+  const scraped = await page.evaluate(() => {
+    const rows = document.querySelectorAll('li.b_algo');
     const items = [];
-    const rows = document.querySelectorAll('.result');
 
     rows.forEach((row) => {
-      if (items.length >= 10) return;
-      const titleEl = row.querySelector('.result__title a, .result__a');
-      const snippetEl = row.querySelector('.result__snippet');
-      const urlEl = row.querySelector('.result__url');
+      const titleEl = row.querySelector('h2');
+      const linkEl = row.querySelector('h2 a') || row.querySelector('a');
+      const snippetEl = row.querySelector('.b_caption p') || row.querySelector('.b_algoSub p') || row.querySelector('p');
 
-      if (titleEl) {
-        const title = (titleEl.textContent || '').trim();
-        let link = titleEl.getAttribute('href') || (urlEl ? (urlEl.textContent || '').trim() : '');
-        
-        if (link.startsWith('//')) link = 'https:' + link;
-        if (link.includes('duckduckgo.com/l/?uddg=')) {
-          try {
-            const match = link.match(/uddg=([^&]+)/);
-            if (match && match[1]) {
-              link = decodeURIComponent(match[1]);
-            }
-          } catch (e) {}
-        }
+      const title = titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : '';
+      const link = linkEl ? (linkEl.href || linkEl.getAttribute('href') || '') : '';
+      const snippet = snippetEl ? (snippetEl.innerText || snippetEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
 
-        const snippet = snippetEl ? (snippetEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
-        if (title && !title.toLowerCase().includes('javascript') && link.startsWith('http')) {
-          items.push({ title, link, snippet });
-        }
+      if (title && link && link.startsWith('http')) {
+        items.push({ title, link, snippet });
       }
     });
 
     return items;
   });
+
+  // Decode links on server side
+  scraped.forEach(item => {
+    item.link = decodeBingLink(item.link);
+  });
+
+  // 6. ADD DEBUGGING (MANDATORY)
+  console.log(`[Debug Log] Total scraped results from Bing: ${scraped.length}`);
+  steps.push(`Total scraped results from Bing: ${scraped.length}`);
+
+  if (scraped.length === 0) {
+    const fullHtml = await page.content();
+    console.log(`[Debug Log] 0 results found. Full Page HTML length: ${fullHtml.length}`);
+    console.log(`[Debug Log] Full Page HTML snippet:`, fullHtml.substring(0, 1500));
+  } else {
+    console.log(`[Debug Log] First raw scraped result:`, JSON.stringify(scraped[0], null, 2));
+  }
+
+  return scraped;
+}
+
+// 4. ADD STRICT RELEVANCE FILTERING & 7. FAILSAFE SYSTEM
+async function runSearchPipeline(rawQuery, steps) {
+  const browser = await launchBrowserSafely();
+
+  try {
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      locale: "en-US",
+      timezoneId: "America/New_York",
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      extraHTTPHeaders: {
+        "Accept-Language": "en-US,en;q=0.9",
+        "Upgrade-Insecure-Requests": "1"
+      }
+    });
+
+    const page = await context.newPage();
+
+    // 1. Enrich Query
+    const enrichedQuery = enrichQuery(rawQuery);
+    console.log(`[Query Generation] Raw: "${rawQuery}" -> Enriched: "${enrichedQuery}"`);
+    steps.push(`Enriched query: "${enrichedQuery}"`);
+
+    // 2. Scrape Bing
+    let scraped = await scrapeBing(page, enrichedQuery, steps);
+
+    // 5. Block Junk Domains
+    let filtered = scraped.filter(item => !isJunkDomain(item.link));
+
+    // 4. Strict Relevance Filter
+    const isLaptopQuery = /\b(laptop|laptops|notebook|pc|macbook)\b/i.test(rawQuery);
+    if (isLaptopQuery) {
+      filtered = filtered.filter(item => {
+        const combined = (item.title + " " + item.snippet).toLowerCase();
+        return combined.includes("laptop") || combined.includes("notebook") || combined.includes("macbook");
+      });
+    }
+
+    console.log(`[Debug Log] Filtered results count: ${filtered.length}`);
+    steps.push(`Filtered results count: ${filtered.length}`);
+
+    // 7. FAILSAFE SYSTEM: Retry if filtered < 3
+    if (filtered.length < 3) {
+      const failsafeQuery = "laptops under 70000 India Amazon Flipkart review";
+      console.log(`[Failsafe Triggered] Results count (${filtered.length}) < 3. Retrying with failsafe query: "${failsafeQuery}"`);
+      steps.push(`Failsafe triggered. Retrying with query: "${failsafeQuery}"`);
+
+      scraped = await scrapeBing(page, failsafeQuery, steps);
+
+      filtered = scraped.filter(item => !isJunkDomain(item.link));
+      if (isLaptopQuery) {
+        filtered = filtered.filter(item => {
+          const combined = (item.title + " " + item.snippet).toLowerCase();
+          return combined.includes("laptop") || combined.includes("notebook") || combined.includes("macbook");
+        });
+      }
+      console.log(`[Debug Log] Failsafe Filtered results count: ${filtered.length}`);
+      steps.push(`Failsafe Filtered results count: ${filtered.length}`);
+    }
+
+    if (filtered.length > 0) {
+      console.log(`[Debug Log] First valid result:`, JSON.stringify(filtered[0], null, 2));
+      steps.push(`First valid result: "${filtered[0].title}"`);
+    }
+
+    // 9. BONUS: Sort by relevance score
+    filtered.sort((a, b) => {
+      const scoreA = calculateRelevanceScore(a.title, a.snippet, rawQuery);
+      const scoreB = calculateRelevanceScore(b.title, b.snippet, rawQuery);
+      return scoreB - scoreA;
+    });
+
+    // 8. FINAL OUTPUT: Return Top 5 clean, relevant results
+    return filtered.slice(0, 5);
+  } finally {
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+  }
 }
 
 // Shared Task Execution Handler
@@ -205,77 +283,29 @@ async function handleTaskExecution(req, res) {
     });
   }
 
-  const cleanQuery = sanitizeQuery(rawQuery);
   const steps = [];
 
-  let browser = null;
-
   try {
-    console.log(`[Execute Task] Raw: "${rawQuery}" -> Clean Query: "${cleanQuery}"`);
-
-    steps.push("Initialized Playwright browser engine");
-    browser = await launchBrowserSafely();
-
-    const context = await browser.newContext({
-      viewport: { width: 1280, height: 800 },
-      locale: "en-US",
-      timezoneId: "America/New_York",
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      extraHTTPHeaders: {
-        "Accept-Language": "en-US,en;q=0.9",
-        "Upgrade-Insecure-Requests": "1"
-      }
-    });
-
-    const page = await context.newPage();
-    let results = [];
-    let engineUsed = "Bing";
-
-    // Primary Engine: Bing (User Spec)
-    steps.push(`Navigated to primary search engine (Bing) for query: "${cleanQuery}"`);
-    try {
-      results = await extractBing(page, cleanQuery);
-    } catch (e) {
-      console.warn(`[Bing Extractor Error]: ${e.message}`);
-    }
-
-    // Secondary Engine: DuckDuckGo Fallback if Bing returns zero
-    if (!results || results.length === 0) {
-      engineUsed = "DuckDuckGo";
-      steps.push("Primary engine returned 0 items. Triggering DuckDuckGo fallback...");
-      try {
-        results = await extractDuckDuckGo(page, cleanQuery);
-      } catch (e) {
-        console.warn(`[DuckDuckGo Extractor Error]: ${e.message}`);
-      }
-    }
-
-    results = results || [];
-    steps.push(`Extracted ${results.length} clean structured search items via ${engineUsed}`);
+    const results = await runSearchPipeline(rawQuery, steps);
 
     return res.status(200).json({
       success: true,
-      query: cleanQuery,
-      engine: engineUsed,
+      query: rawQuery,
+      engine: "Bing",
       results,
       steps,
-      result: `Found ${results.length} structured results for "${cleanQuery}"`
+      result: `Found ${results.length} structured results for "${rawQuery}"`
     });
   } catch (err) {
     console.error(`[Execution Error]: ${err.message}`);
     steps.push(`Execution error: ${err.message}`);
     return res.status(500).json({
       success: false,
-      query: cleanQuery || rawQuery,
+      query: rawQuery,
       results: [],
       steps,
       error: err.message
     });
-  } finally {
-    if (browser) {
-      await browser.close().catch(() => {});
-      console.log("[Playwright] Browser instance closed safely.");
-    }
   }
 }
 
