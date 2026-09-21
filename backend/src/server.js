@@ -27,48 +27,16 @@ app.get("/api/agent/health", (req, res) => {
   res.status(200).json({ status: "ok", service: "backend" });
 });
 
-// Query Sanitizer & Enhancer Utility
+// Clean query helper
 function sanitizeQuery(rawObjective) {
   if (!rawObjective) return "";
   let clean = rawObjective.trim();
   clean = clean.replace(/^["'\s]+|["'\s]+$/g, "");
   clean = clean.replace(/^(?:search\s+google\s+for|search\s+for|search|find|go\s+to|open)\s+/i, "");
-  clean = clean.trim() || rawObjective.replace(/["']/g, "").trim();
-
-  // Enhance numeric budget queries (e.g. "laptops under 50000" -> "laptops under 50000 in India INR")
-  if (/\b(?:laptop|laptops|phone|phones|mobile|pc)\b/i.test(clean) && /\b\d{4,6}\b/.test(clean) && !/\b(in india|in usa|usd|inr|rs)\b/i.test(clean)) {
-    clean += " in India INR";
-  }
-
-  return clean;
+  return clean.trim() || rawObjective.replace(/["']/g, "").trim();
 }
 
-// Helper: Filter out non-English / CJK script titles
-function isEnglishResult(title, snippet) {
-  const combined = (title + " " + snippet);
-  const hasForeignScript = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\u0400-\u04ff\u00C0-\u024F]/.test(combined);
-  return !hasForeignScript;
-}
-
-// Helper: Strict Keyword Relevance Filter
-function isRelevantResult(title, snippet, query) {
-  const combined = (title + " " + snippet).toLowerCase();
-  const qLower = query.toLowerCase();
-
-  if (qLower.includes("laptop") || qLower.includes("notebook") || qLower.includes("computer")) {
-    const laptopKeywords = [
-      "laptop", "notebook", "pc", "macbook", "asus", "hp", "lenovo", "dell", 
-      "acer", "msi", "apple", "intel", "ryzen", "core", "ram", "ssd", "display", 
-      "gadget", "price", "digit", "flipkart", "amazon", "smartprix", "91mobiles", "tech"
-    ];
-    const matchesKeyword = laptopKeywords.some(k => combined.includes(k));
-    if (!matchesKeyword) return false;
-  }
-
-  return true;
-}
-
-// Helper: Safely launch Chromium with dynamic self-healing browser installer
+// Safely launch Chromium with dynamic self-healing browser installer
 async function launchBrowserSafely() {
   const launchOptions = {
     headless: true,
@@ -98,17 +66,105 @@ async function launchBrowserSafely() {
   }
 }
 
-// 1. DuckDuckGo Enforced English Extractor
+// Bing Search Extractor (Primary Source per User Spec)
+async function extractBing(page, rawQuery) {
+  const cleaned = rawQuery.replace(/^(best|top)\s+/i, "");
+  const searchQueries = [rawQuery];
+  if (cleaned !== rawQuery) {
+    searchQueries.unshift(cleaned);
+  }
+
+  let finalItems = [];
+
+  for (const q of searchQueries) {
+    const url = `https://www.bing.com/search?q=${encodeURIComponent(q)}&setmkt=en-US&setlang=en-US`;
+    console.log(`[Bing Extractor] Navigating to: ${url}`);
+    
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
+    } catch (e) {
+      console.warn(`[Bing Extractor] page.goto warning: ${e.message}`);
+    }
+
+    try {
+      await page.waitForSelector('li.b_algo', { timeout: 10000 });
+    } catch (err) {
+      console.warn(`[Bing Extractor] waitForSelector 'li.b_algo' timed out: ${err.message}`);
+    }
+
+    const extractedData = await page.evaluate(() => {
+      const rows = document.querySelectorAll('li.b_algo');
+      const items = [];
+
+      rows.forEach((row) => {
+        const titleEl = row.querySelector('h2');
+        const linkEl = row.querySelector('h2 a') || row.querySelector('a');
+        const snippetEl = row.querySelector('.b_caption p') || row.querySelector('.b_algoSub p') || row.querySelector('p');
+
+        const title = titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : '';
+        let link = linkEl ? (linkEl.href || linkEl.getAttribute('href') || '') : '';
+        const snippet = snippetEl ? (snippetEl.innerText || snippetEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
+
+        // Decode Bing redirect link to direct target URL if present
+        if (link.includes('bing.com/ck/a?!')) {
+          try {
+            const uMatch = link.match(/[?&]u=a1([^&]+)/);
+            if (uMatch && uMatch[1]) {
+              const decoded = atob(uMatch[1]);
+              if (decoded.startsWith('http')) link = decoded;
+            }
+          } catch (e) {}
+        }
+
+        if (title && link && link.startsWith('http')) {
+          items.push({ title, link, snippet });
+        }
+      });
+
+      return {
+        elementCount: rows.length,
+        items
+      };
+    });
+
+    console.log(`[Bing Extractor] Number of elements found: ${extractedData.elementCount}`);
+
+    if (extractedData.items.length > 0) {
+      console.log(`[Bing Extractor] First extracted item:`, JSON.stringify(extractedData.items[0], null, 2));
+
+      const validItems = extractedData.items.filter(item => {
+        const t = item.title.toLowerCase();
+        if (t === "best online payment" || t.includes("dictionary") || t.includes("cambridge") || t.includes("merriam-webster")) {
+          return false;
+        }
+        return true;
+      });
+
+      if (validItems.length >= 3) {
+        finalItems = validItems;
+        break;
+      }
+    } else {
+      const pageHtml = await page.content();
+      console.log(`[Bing Extractor] Full Page HTML (length ${pageHtml.length}):`, pageHtml);
+    }
+  }
+
+  return finalItems;
+}
+
+// Fallback Extractor: DuckDuckGo
 async function extractDuckDuckGo(page, query) {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}&kl=us-en`;
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
+  console.log(`[DuckDuckGo Extractor] Navigating to: ${url}`);
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
 
   return await page.evaluate(() => {
     const items = [];
     const rows = document.querySelectorAll('.result');
 
     rows.forEach((row) => {
-      if (items.length >= 6) return;
+      if (items.length >= 10) return;
       const titleEl = row.querySelector('.result__title a, .result__a');
       const snippetEl = row.querySelector('.result__snippet');
       const urlEl = row.querySelector('.result__url');
@@ -138,35 +194,6 @@ async function extractDuckDuckGo(page, query) {
   });
 }
 
-// 2. Bing Enforced English Extractor
-async function extractBing(page, query) {
-  const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}&setmkt=en-US&setlang=en-US`;
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
-
-  return await page.evaluate(() => {
-    const items = [];
-    const rows = document.querySelectorAll('.b_algo');
-
-    rows.forEach((row) => {
-      if (items.length >= 6) return;
-      const titleEl = row.querySelector('h2 a');
-      const snippetEl = row.querySelector('.b_caption p, p, .b_algoSub');
-
-      if (titleEl) {
-        const title = (titleEl.textContent || '').trim();
-        const link = titleEl.getAttribute('href') || '';
-        const snippet = snippetEl ? (snippetEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
-
-        if (title && link.startsWith('http')) {
-          items.push({ title, link, snippet });
-        }
-      }
-    });
-
-    return items;
-  });
-}
-
 // Shared Task Execution Handler
 async function handleTaskExecution(req, res) {
   const rawQuery = req.body?.query || req.body?.objective;
@@ -186,14 +213,14 @@ async function handleTaskExecution(req, res) {
   try {
     console.log(`[Execute Task] Raw: "${rawQuery}" -> Clean Query: "${cleanQuery}"`);
 
-    steps.push("Initialized browser engine with stealth headers");
+    steps.push("Initialized Playwright browser engine");
     browser = await launchBrowserSafely();
 
     const context = await browser.newContext({
       viewport: { width: 1280, height: 800 },
       locale: "en-US",
       timezoneId: "America/New_York",
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       extraHTTPHeaders: {
         "Accept-Language": "en-US,en;q=0.9",
         "Upgrade-Insecure-Requests": "1"
@@ -202,26 +229,24 @@ async function handleTaskExecution(req, res) {
 
     const page = await context.newPage();
     let results = [];
-    let engineUsed = "DuckDuckGo";
+    let engineUsed = "Bing";
 
-    // Attempt 1: DuckDuckGo Extractor
-    steps.push(`Navigated to search engine for query: "${cleanQuery}"`);
+    // Primary Engine: Bing (User Spec)
+    steps.push(`Navigated to primary search engine (Bing) for query: "${cleanQuery}"`);
     try {
-      const rawDd = await extractDuckDuckGo(page, cleanQuery);
-      results = rawDd.filter(r => isEnglishResult(r.title, r.snippet) && isRelevantResult(r.title, r.snippet, cleanQuery));
+      results = await extractBing(page, cleanQuery);
     } catch (e) {
-      console.warn(`DuckDuckGo extractor warning: ${e.message}`);
+      console.warn(`[Bing Extractor Error]: ${e.message}`);
     }
 
-    // Attempt 2: Fallback to Bing Extractor if zero results
+    // Secondary Engine: DuckDuckGo Fallback if Bing returns zero
     if (!results || results.length === 0) {
-      engineUsed = "Bing";
-      steps.push("Primary engine returned 0 items. Triggered Bing search fallback...");
+      engineUsed = "DuckDuckGo";
+      steps.push("Primary engine returned 0 items. Triggering DuckDuckGo fallback...");
       try {
-        const rawBing = await extractBing(page, cleanQuery);
-        results = rawBing.filter(r => isEnglishResult(r.title, r.snippet) && isRelevantResult(r.title, r.snippet, cleanQuery));
+        results = await extractDuckDuckGo(page, cleanQuery);
       } catch (e) {
-        console.warn(`Bing extractor warning: ${e.message}`);
+        console.warn(`[DuckDuckGo Extractor Error]: ${e.message}`);
       }
     }
 
