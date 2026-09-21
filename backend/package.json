@@ -5,7 +5,7 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "postinstall": "npx playwright install chromium chromium-headless-shell"
+    "postinstall": "npx playwright install"
   },
   "dependencies": {
     "cors": "^2.8.5",

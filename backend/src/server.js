@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const { chromium } = require("playwright");
+const { execSync } = require("child_process");
 
 const app = express();
 
@@ -25,6 +26,36 @@ app.get("/health", (req, res) => {
 app.get("/api/agent/health", (req, res) => {
   res.status(200).json({ status: "ok", service: "backend" });
 });
+
+// Helper: Safely launch Chromium with dynamic self-healing browser installer
+async function launchBrowserSafely() {
+  const launchOptions = {
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-accelerated-2d-canvas",
+      "--disable-gpu"
+    ]
+  };
+
+  try {
+    return await chromium.launch(launchOptions);
+  } catch (err) {
+    console.warn(`[Playwright Launch Warning]: ${err.message}`);
+    if (err.message.includes("Executable doesn't exist") || err.message.includes("download new browsers")) {
+      console.log("[Playwright] Missing browser binary detected. Triggering dynamic auto-installation...");
+      try {
+        execSync("npx playwright install", { stdio: "inherit" });
+      } catch (cmdErr) {
+        console.error(`[Playwright Auto-Install Error]: ${cmdErr.message}`);
+      }
+      return await chromium.launch(launchOptions);
+    }
+    throw err;
+  }
+}
 
 // Shared task execution logic
 async function handleTaskExecution(req, res) {
@@ -57,10 +88,7 @@ async function handleTaskExecution(req, res) {
     console.log(`[POST Task] Objective: "${cleanObjective}"`);
 
     addLog("BROWSER_INIT", "Launching Playwright Chromium in cloud headless mode...");
-    browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-    });
+    browser = await launchBrowserSafely();
 
     const context = await browser.newContext({
       viewport: { width: 1280, height: 800 },
