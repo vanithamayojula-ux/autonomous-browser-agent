@@ -4,16 +4,30 @@ const { chromium } = require("playwright");
 
 const app = express();
 
-app.use(cors());
+// Enable CORS for Vercel frontend domain and all origins
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
 
-// Health route
+// Health routes
 app.get("/", (req, res) => {
   res.send("Backend is running");
 });
 
-// Main API route
-app.post("/run-task", async (req, res) => {
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok", service: "backend" });
+});
+
+app.get("/api/agent/health", (req, res) => {
+  res.status(200).json({ status: "ok", service: "backend" });
+});
+
+// Shared task execution logic
+async function handleTaskExecution(req, res) {
   const { objective } = req.body || {};
 
   if (!objective || typeof objective !== "string" || !objective.trim()) {
@@ -23,35 +37,57 @@ app.post("/run-task", async (req, res) => {
     });
   }
 
+  const logs = [];
+  const startTime = Date.now();
+  const addLog = (action, detail, status = "SUCCESS") => {
+    logs.push({
+      timestamp: new Date().toISOString(),
+      stepIndex: logs.length + 1,
+      totalSteps: 4,
+      action,
+      status,
+      detail
+    });
+  };
+
   let browser = null;
 
   try {
-    console.log(`[POST /run-task] Objective: "${objective}"`);
+    const cleanObjective = objective.trim();
+    console.log(`[POST Task] Objective: "${cleanObjective}"`);
 
+    addLog("BROWSER_INIT", "Launching Playwright Chromium in cloud headless mode...");
     browser = await chromium.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"]
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
     });
 
-    const context = await browser.newContext();
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    });
+
     const page = await context.newPage();
 
     // 1. Open Google
+    addLog("goto", "Navigating to https://www.google.com");
     await page.goto("https://www.google.com", { waitUntil: "domcontentloaded", timeout: 20000 });
 
-    // 2. Search the objective
+    // 2. Search objective
+    addLog("type", `Searching query: "${cleanObjective}"`);
     const searchSelector = 'textarea[name="q"], input[name="q"]';
     await page.waitForSelector(searchSelector, { timeout: 10000 });
-    await page.fill(searchSelector, objective);
+    await page.fill(searchSelector, cleanObjective);
     await page.keyboard.press("Enter");
 
     // 3. Wait for search results
-    await page.waitForTimeout(2000);
+    addLog("wait", "Waiting for search results to load...");
+    await page.waitForTimeout(2500);
 
-    // 4. Return first result title / page title
+    // 4. Extract search results
+    addLog("extract", "Extracting result titles and page content...");
     const pageTitle = await page.title();
     
-    // Attempt to extract first result title if available
     let firstResultTitle = pageTitle;
     try {
       const h3Element = await page.$("h3");
@@ -61,29 +97,51 @@ app.post("/run-task", async (req, res) => {
           firstResultTitle = h3Text.trim();
         }
       }
-    } catch (e) {
-      // Fallback to page title
-    }
+    } catch (e) {}
+
+    const bodyText = await page.textContent("body");
+    const snippet = (bodyText || "").replace(/\s+/g, " ").trim().slice(0, 800);
+
+    const summary = `### Autonomous Agent Summary\n\n**Objective:** ${cleanObjective}\n\n**Primary Result Found:** ${firstResultTitle}\n\n**Page Title:** ${pageTitle}\n\n**Extracted Snippet:**\n${snippet.slice(0, 350)}...`;
+    const resultText = `Successfully executed objective: "${cleanObjective}". Found result: ${firstResultTitle}`;
+
+    addLog("SUCCESS", `Execution finished in ${Date.now() - startTime}ms`);
 
     return res.status(200).json({
       success: true,
-      objective,
+      objective: cleanObjective,
       title: firstResultTitle,
-      pageTitle
+      pageTitle,
+      snippet,
+      summary,
+      result: resultText,
+      logs,
+      plan: [
+        { action: "goto", url: "https://www.google.com" },
+        { action: "type", selector: searchSelector, text: cleanObjective },
+        { action: "wait", durationMs: 2500 },
+        { action: "extract", selector: "body" }
+      ]
     });
   } catch (err) {
     console.error(`[Execution Error]: ${err.message}`);
+    addLog("FAILED", `Error: ${err.message}`, "FAILED");
     return res.status(500).json({
       success: false,
-      error: err.message
+      error: err.message,
+      logs
     });
   } finally {
     if (browser) {
       await browser.close().catch(() => {});
-      console.log("[Playwright] Browser closed safely.");
+      console.log("[Playwright] Browser instance closed safely.");
     }
   }
-});
+}
+
+// Support both endpoint paths for seamless frontend compatibility
+app.post("/run-task", handleTaskExecution);
+app.post("/api/agent/run", handleTaskExecution);
 
 const PORT = process.env.PORT || 3000;
 

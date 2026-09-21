@@ -1,20 +1,20 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Play, Square, Bot, Sparkles, FileText, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Play, Square, Bot, Sparkles, CheckCircle, AlertTriangle, Link as LinkIcon } from 'lucide-react';
 import { LogViewer, StepLog } from '../components/LogViewer';
 import { ScreenshotModal } from '../components/ScreenshotModal';
 
 export default function Home() {
   const [objective, setObjective] = useState('');
+  const [backendUrl, setBackendUrl] = useState(
+    process.env.NEXT_PUBLIC_BACKEND_URL || 'https://autonomous-browser-agent.onrender.com'
+  );
   const [isExecuting, setIsExecuting] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [logs, setLogs] = useState<StepLog[]>([]);
   const [summary, setSummary] = useState<string | null>(null);
   const [activeScreenshot, setActiveScreenshot] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
 
   const handleRunTask = async () => {
     if (!objective.trim()) return;
@@ -23,14 +23,30 @@ export default function Home() {
     setError(null);
     setSummary(null);
     setLogs([]);
-    setStatusMessage('Connecting to backend agent...');
+
+    // Clean target URL (remove trailing slash if present)
+    const baseUrl = backendUrl.trim().replace(/\/+$/, '');
 
     try {
-      const response = await fetch(`${BACKEND_URL}/api/agent/run`, {
+      let response = await fetch(`${baseUrl}/run-task`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ objective }),
+        body: JSON.stringify({ objective: objective.trim() }),
       });
+
+      if (response.status === 404) {
+        // Fallback endpoint test
+        response = await fetch(`${baseUrl}/api/agent/run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ objective: objective.trim() }),
+        });
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Server returned status ${response.status}: ${errorText || response.statusText}`);
+      }
 
       const data = await response.json();
 
@@ -39,10 +55,15 @@ export default function Home() {
       }
 
       setLogs(data.logs || []);
-      setSummary(data.summary || null);
-      setStatusMessage('Execution completed successfully!');
+      const outputText = data.summary || data.result || (data.title ? `Search Result: ${data.title}` : 'Task completed successfully');
+      setSummary(outputText);
     } catch (err) {
-      setError((err as Error).message);
+      const msg = (err as Error).message;
+      if (msg.includes('Failed to fetch')) {
+        setError(`Failed to connect to backend at "${baseUrl}". Please check if your Render backend is live, CORS is enabled, or update the Backend URL input.`);
+      } else {
+        setError(msg);
+      }
     } finally {
       setIsExecuting(false);
     }
@@ -76,7 +97,23 @@ export default function Home() {
         {/* Left Column: Input & Controls */}
         <div className="lg:col-span-5 space-y-6">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
-            <div className="flex items-center space-x-2 text-sm font-semibold text-slate-200">
+            {/* Backend URL Input for Vercel -> Render connection */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-slate-400 flex items-center space-x-1.5">
+                <LinkIcon className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Render Backend Service URL</span>
+              </label>
+              <input
+                type="text"
+                value={backendUrl}
+                onChange={(e) => setBackendUrl(e.target.value)}
+                placeholder="https://your-render-backend.onrender.com"
+                disabled={isExecuting}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono transition"
+              />
+            </div>
+
+            <div className="flex items-center space-x-2 text-sm font-semibold text-slate-200 pt-2">
               <Sparkles className="w-4 h-4 text-indigo-400" />
               <span>Define Task Objective</span>
             </div>
@@ -84,9 +121,9 @@ export default function Home() {
             <textarea
               value={objective}
               onChange={(e) => setObjective(e.target.value)}
-              placeholder="e.g. Go to Google, search for best backend projects for beginners 2026, extract results, and take a screenshot."
+              placeholder="e.g. Search Google for best backend projects for beginners 2026."
               disabled={isExecuting}
-              className="w-full h-36 bg-slate-950 border border-slate-800 rounded-xl p-3.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition resize-none"
+              className="w-full h-32 bg-slate-950 border border-slate-800 rounded-xl p-3.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition resize-none"
             />
 
             <div className="flex items-center justify-between pt-2">
@@ -98,7 +135,7 @@ export default function Home() {
                 {isExecuting ? (
                   <>
                     <Square className="w-4 h-4 animate-pulse fill-white" />
-                    <span>Executing Task...</span>
+                    <span>Executing Task Agent...</span>
                   </>
                 ) : (
                   <>
@@ -115,9 +152,9 @@ export default function Home() {
             <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Preset Sample Objectives</h3>
             <div className="space-y-2">
               {[
-                'Search Google for top 3 beginner backend projects 2026 and extract titles.',
-                'Go to GitHub, check trending repositories, and summarize top results.',
-                'Open HackerNews homepage and extract top 5 technology stories.'
+                'Search Google for backend projects',
+                'Search Google for top 3 beginner backend projects 2026',
+                'Search Google for Node.js Express Playwright starter template'
               ].map((sample, i) => (
                 <button
                   key={i}
@@ -135,7 +172,7 @@ export default function Home() {
             <div className="bg-rose-500/10 border border-rose-500/30 text-rose-300 p-4 rounded-xl text-xs flex items-start space-x-3">
               <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
               <div>
-                <span className="font-semibold block">Execution Error</span>
+                <span className="font-semibold block">Connection / Execution Error</span>
                 <span>{error}</span>
               </div>
             </div>
