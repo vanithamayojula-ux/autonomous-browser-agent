@@ -1,25 +1,28 @@
 {
-  "name": "autonomous-browser-agent",
+  "name": "autonomous-browser-agent-backend",
   "version": "1.0.0",
-  "description": "Production-ready AI-Powered Autonomous Browser Agent Web Application",
-  "private": true,
-  "workspaces": [
-    "frontend",
-    "backend"
-  ],
+  "description": "Render-hardened AI Browser Agent Backend API using Node.js & Playwright",
+  "main": "server.js",
   "scripts": {
-    "install:all": "npm install --prefix backend && npm install --prefix frontend",
-    "dev:backend": "npm run dev --prefix backend",
-    "dev:frontend": "npm run dev --prefix frontend",
-    "build": "npm run build --prefix backend && npm run build --prefix frontend"
+    "start": "node server.js",
+    "postinstall": "npx playwright install --with-deps chromium || true",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "playwright": "^1.45.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "keywords": [
-    "ai-agent",
+    "render",
     "playwright",
+    "ai-agent",
     "browser-automation",
-    "nextjs",
-    "express",
-    "antigravity"
+    "express"
   ],
   "author": "",
   "license": "MIT"
