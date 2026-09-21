@@ -1,0 +1,26 @@
+{
+  "name": "autonomous-browser-agent",
+  "version": "1.0.0",
+  "description": "Production-ready AI-Powered Autonomous Browser Agent Web Application",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "install:all": "npm install --prefix backend && npm install --prefix frontend",
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "build": "npm run build --prefix backend && npm run build --prefix frontend"
+  },
+  "keywords": [
+    "ai-agent",
+    "playwright",
+    "browser-automation",
+    "nextjs",
+    "express",
+    "antigravity"
+  ],
+  "author": "",
+  "license": "MIT"
+}
