@@ -19,12 +19,10 @@ venv/
 dist/
 build/
 *.log
+*.txt
 
 # IDE & OS
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-git_out.txt
-git_err.txt
-
