@@ -73,7 +73,7 @@ async function handleTaskExecution(req, res) {
     logs.push({
       timestamp: new Date().toISOString(),
       stepIndex: logs.length + 1,
-      totalSteps: 5,
+      totalSteps: 3,
       action,
       status,
       detail
@@ -100,69 +100,64 @@ async function handleTaskExecution(req, res) {
 
     const page = await context.newPage();
 
-    // Determine target search URL (DuckDuckGo avoids CAPTCHA walls on cloud servers)
-    const targetUrl = "https://duckduckgo.com";
-    addLog("goto", `Navigating to ${targetUrl}`);
-    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
+    // Direct search URL navigation (100% resilient, zero input selector timeout)
+    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(cleanObjective)}`;
+    addLog("goto", `Navigating directly to search URL: ${searchUrl}`);
+    await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
 
-    // 2. Type objective query
-    addLog("type", `Typing search query: "${cleanObjective}"`);
-    const searchSelector = 'input[name="q"], input[type="text"]';
-    await page.waitForSelector(searchSelector, { timeout: 10000 });
-    await page.fill(searchSelector, cleanObjective);
-    await page.keyboard.press("Enter");
-
-    // 3. Wait for search results
-    addLog("wait", "Waiting for search results to load...");
-    await page.waitForTimeout(3000);
-
-    // 4. Extract search result titles and snippets
+    // Extract search result titles and snippets
     addLog("extract", "Extracting result titles, snippets, and page content...");
     const pageTitle = await page.title();
 
-    // Extract top organic result titles and links
-    const results = await page.evaluate(() => {
+    // Extract organic search result titles and snippets
+    const searchResults = await page.evaluate(() => {
       const items = [];
-      const titleElements = document.querySelectorAll('h2, a[data-testid="result-title-a"], article h2');
-      titleElements.forEach((el, index) => {
+      const links = document.querySelectorAll('.result__title a, .result__a, h2 a');
+      const snippets = document.querySelectorAll('.result__snippet');
+      
+      links.forEach((el, index) => {
         if (index < 5) {
-          const text = (el.textContent || '').trim();
-          if (text && text.length > 5) items.push(text);
+          const title = (el.textContent || '').trim();
+          const href = el.getAttribute('href') || '';
+          const snippetText = snippets[index] ? (snippets[index].textContent || '').trim() : '';
+          if (title) {
+            items.push({ title, href, snippet: snippetText });
+          }
         }
       });
       return items;
     });
 
     const bodyText = await page.textContent("body");
-    // Clean snippet text, stripping excessive whitespace
-    const cleanSnippet = (bodyText || '')
+    const cleanBodySnippet = (bodyText || '')
       .replace(/\s+/g, ' ')
-      .replace(/<[^>]*>/g, '')
-      .trim();
+      .trim()
+      .slice(0, 600);
 
-    const resultListText = results.length > 0
-      ? results.map((r, i) => `${i + 1}. ${r}`).join('\n')
-      : `Found page title: ${pageTitle}`;
+    const resultListFormatted = searchResults.length > 0
+      ? searchResults.map((r, i) => `**${i + 1}. ${r.title}**\n${r.snippet ? '   - ' + r.snippet : ''}`).join('\n\n')
+      : `Page Title: ${pageTitle}`;
 
-    const summary = `### Autonomous Agent Results\n\n**Objective:** "${cleanObjective}"\n\n**Top Extracted Results:**\n${resultListText}\n\n**Extracted Content Snippet:**\n${cleanSnippet.slice(0, 500)}...`;
+    const primaryTitle = searchResults[0]?.title || pageTitle;
+
+    const summary = `### Autonomous Agent Results\n\n**Objective:** "${cleanObjective}"\n\n**Top Search Results:**\n${resultListFormatted}\n\n**Raw Extracted Content:**\n${cleanBodySnippet.slice(0, 400)}...`;
+    const resultText = `Successfully executed objective: "${cleanObjective}". Found result: ${primaryTitle}`;
 
     addLog("SUCCESS", `Execution finished in ${Date.now() - startTime}ms`);
 
     return res.status(200).json({
       success: true,
       objective: cleanObjective,
-      title: results[0] || pageTitle,
+      title: primaryTitle,
       pageTitle,
-      results,
-      snippet: cleanSnippet.slice(0, 600),
+      results: searchResults,
+      snippet: cleanBodySnippet,
       summary,
-      result: `Successfully searched for "${cleanObjective}". Top result: ${results[0] || pageTitle}`,
+      result: resultText,
       logs,
       plan: [
-        { action: "goto", url: targetUrl },
-        { action: "type", selector: searchSelector, text: cleanObjective },
-        { action: "wait", durationMs: 3000 },
-        { action: "extract", selector: "results" }
+        { action: "goto", url: searchUrl },
+        { action: "extract", selector: ".result__title" }
       ]
     });
   } catch (err) {
