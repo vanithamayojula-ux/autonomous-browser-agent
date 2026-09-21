@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "postinstall": "npx playwright install --with-deps chromium || true",
+    "postinstall": "npx playwright install chromium",
     "dev": "node server.js"
   },
   "dependencies": {
