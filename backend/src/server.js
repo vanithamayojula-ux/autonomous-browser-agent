@@ -27,18 +27,18 @@ app.get("/api/agent/health", (req, res) => {
   res.status(200).json({ status: "ok", service: "backend" });
 });
 
-// Helper: Query Sanitizer to strip enclosing quotes and command prefixes
-function sanitizeQuery(rawObjective) {
-  if (!rawObjective) return "";
-  let clean = rawObjective.trim();
-  // Strip leading and trailing quotes or brackets
+// Query Sanitizer Utility
+function sanitizeQuery(rawQuery) {
+  if (!rawQuery || typeof rawQuery !== "string") return "";
+  let clean = rawQuery.trim();
+  // Strip enclosing quotes and brackets
   clean = clean.replace(/^["'\s]+|["'\s]+$/g, "");
   // Strip command prefixes like "Search Google for", "Search for", "Find"
   clean = clean.replace(/^(?:search\s+google\s+for|search\s+for|search|find|go\s+to|open)\s+/i, "");
-  return clean.trim() || rawObjective.replace(/["']/g, "").trim();
+  return clean.trim() || rawQuery.replace(/["']/g, "").trim();
 }
 
-// Helper: Safely launch Chromium with dynamic self-healing browser installer
+// Helper: Safely launch Chromium with dynamic self-healing installer
 async function launchBrowserSafely() {
   const launchOptions = {
     headless: true,
@@ -55,7 +55,7 @@ async function launchBrowserSafely() {
   } catch (err) {
     console.warn(`[Playwright Launch Warning]: ${err.message}`);
     if (err.message.includes("Executable doesn't exist") || err.message.includes("download new browsers")) {
-      console.log("[Playwright] Missing browser binary detected. Triggering dynamic auto-installation...");
+      console.log("[Playwright] Missing browser binary detected. Running auto-install...");
       try {
         execSync("npx playwright install", { stdio: "inherit" });
       } catch (cmdErr) {
@@ -67,24 +67,96 @@ async function launchBrowserSafely() {
   }
 }
 
-// Shared task execution logic
-async function handleTaskExecution(req, res) {
-  const { objective } = req.body || {};
+// 1. DuckDuckGo Structured Extractor
+async function extractDuckDuckGo(page, query) {
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
 
-  if (!objective || typeof objective !== "string" || !objective.trim()) {
+  return await page.evaluate(() => {
+    const items = [];
+    const rows = document.querySelectorAll('.result');
+
+    rows.forEach((row) => {
+      if (items.length >= 10) return;
+      const titleEl = row.querySelector('.result__title a, .result__a');
+      const snippetEl = row.querySelector('.result__snippet');
+      const urlEl = row.querySelector('.result__url');
+
+      if (titleEl) {
+        const title = (titleEl.textContent || '').trim();
+        let link = titleEl.getAttribute('href') || (urlEl ? (urlEl.textContent || '').trim() : '');
+        
+        // Clean DuckDuckGo redirect URLs
+        if (link.startsWith('//')) link = 'https:' + link;
+        if (link.includes('duckduckgo.com/l/?uddg=')) {
+          try {
+            const match = link.match(/uddg=([^&]+)/);
+            if (match && match[1]) {
+              link = decodeURIComponent(match[1]);
+            }
+          } catch (e) {}
+        }
+
+        const snippet = snippetEl ? (snippetEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
+        if (title && !title.toLowerCase().includes('javascript') && link.startsWith('http')) {
+          items.push({ title, link, snippet });
+        }
+      }
+    });
+
+    return items;
+  });
+}
+
+// 2. Bing Structured Extractor
+async function extractBing(page, query) {
+  const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
+
+  return await page.evaluate(() => {
+    const items = [];
+    const rows = document.querySelectorAll('.b_algo');
+
+    rows.forEach((row) => {
+      if (items.length >= 10) return;
+      const titleEl = row.querySelector('h2 a');
+      const snippetEl = row.querySelector('.b_caption p, p, .b_algoSub');
+
+      if (titleEl) {
+        const title = (titleEl.textContent || '').trim();
+        const link = titleEl.getAttribute('href') || '';
+        const snippet = snippetEl ? (snippetEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
+
+        if (title && link.startsWith('http')) {
+          items.push({ title, link, snippet });
+        }
+      }
+    });
+
+    return items;
+  });
+}
+
+// Main Execution Handler
+async function handleExecuteTask(req, res) {
+  const rawQuery = req.body?.query || req.body?.objective;
+
+  if (!rawQuery || typeof rawQuery !== "string" || !rawQuery.trim()) {
     return res.status(400).json({
       success: false,
-      error: 'Missing or invalid "objective" string in request body.'
+      error: 'Missing or invalid "query" or "objective" string in request body.'
     });
   }
 
-  const logs = [];
+  const cleanQuery = sanitizeQuery(rawQuery);
   const startTime = Date.now();
+  const logs = [];
+
   const addLog = (action, detail, status = "SUCCESS") => {
     logs.push({
       timestamp: new Date().toISOString(),
       stepIndex: logs.length + 1,
-      totalSteps: 4,
+      totalSteps: 3,
       action,
       status,
       detail
@@ -94,101 +166,68 @@ async function handleTaskExecution(req, res) {
   let browser = null;
 
   try {
-    const rawObjective = objective.trim();
-    const cleanSearchTerms = sanitizeQuery(rawObjective);
-    console.log(`[POST Task] Raw Objective: "${rawObjective}" -> Sanitized Search Query: "${cleanSearchTerms}"`);
+    console.log(`[Execute Task] Raw: "${rawQuery}" -> Clean Query: "${cleanQuery}"`);
 
     addLog("BROWSER_INIT", "Launching Playwright Chromium engine with stealth headers...");
     browser = await launchBrowserSafely();
 
     const context = await browser.newContext({
       viewport: { width: 1280, height: 800 },
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      extraHTTPHeaders: {
-        "Accept-Language": "en-US,en;q=0.9",
-        "Upgrade-Insecure-Requests": "1"
-      }
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     });
 
     const page = await context.newPage();
+    let results = [];
+    let engineUsed = "DuckDuckGo";
 
-    // 1. Primary Navigation to Search Engine (DuckDuckGo HTML)
-    let searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(cleanSearchTerms)}`;
-    addLog("goto", `Navigating to search URL: ${searchUrl}`);
-    await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
-
-    let pageTitle = await page.title();
-    let bodyText = (await page.textContent("body")) || "";
-
-    // 2. Fallback check: If DuckDuckGo limits or blocks, switch to Bing Search
-    if (!bodyText || bodyText.includes("If this persists, please email us") || bodyText.length < 300) {
-      searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(cleanSearchTerms)}`;
-      addLog("fallback", `Primary engine limited. Switching to search engine: ${searchUrl}`);
-      await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
-      pageTitle = await page.title();
-      bodyText = (await page.textContent("body")) || "";
+    // Attempt 1: DuckDuckGo Extractor
+    addLog("extract_duckduckgo", `Running DuckDuckGo extractor for query: "${cleanQuery}"`);
+    try {
+      results = await extractDuckDuckGo(page, cleanQuery);
+    } catch (e) {
+      console.warn(`DuckDuckGo extractor failed: ${e.message}`);
     }
 
-    // 3. Extract organic search result titles and snippets
-    addLog("extract", "Extracting result titles, snippets, and page content...");
+    // Attempt 2: Fallback to Bing Extractor if zero results
+    if (!results || results.length === 0) {
+      engineUsed = "Bing";
+      addLog("fallback_bing", `DuckDuckGo returned 0 items. Falling back to Bing extractor...`);
+      try {
+        results = await extractBing(page, cleanQuery);
+      } catch (e) {
+        console.warn(`Bing extractor failed: ${e.message}`);
+      }
+    }
 
-    const searchResults = await page.evaluate(() => {
-      const items = [];
-      // Selectors matching both DuckDuckGo and Bing organic headers
-      const links = document.querySelectorAll('.result__title a, .result__a, h2 a, .b_algo h2 a');
-      const snippets = document.querySelectorAll('.result__snippet, .b_caption p, p');
+    // Ensure results is always an array
+    results = results || [];
 
-      links.forEach((el, index) => {
-        if (items.length < 5) {
-          const title = (el.textContent || '').trim();
-          const href = el.getAttribute('href') || '';
-          const snippetText = snippets[index] ? (snippets[index].textContent || '').trim() : '';
-          if (title && title.length > 3 && !title.toLowerCase().includes('javascript')) {
-            items.push({ title, href, snippet: snippetText });
-          }
-        }
-      });
-      return items;
-    });
+    // Format clean Markdown summary output (NO raw HTML)
+    const formattedSummaryList = results.length > 0
+      ? results.map((item, i) => `**${i + 1}. [${item.title}](${item.link})**\n   ${item.snippet}`).join('\n\n')
+      : `No structured search results found for query: "${cleanQuery}"`;
 
-    const cleanBodySnippet = bodyText
-      .replace(/\s+/g, ' ')
-      .replace(/<[^>]*>/g, '')
-      .trim()
-      .slice(0, 600);
+    const summary = `### Structured Search Results for "${cleanQuery}"\n\n**Engine Used:** ${engineUsed}\n**Total Results Found:** ${results.length}\n\n${formattedSummaryList}`;
 
-    const resultListFormatted = searchResults.length > 0
-      ? searchResults.map((r, i) => `**${i + 1}. ${r.title}**\n${r.snippet ? '   - ' + r.snippet : ''}`).join('\n\n')
-      : `Page Title: ${pageTitle}`;
-
-    const primaryTitle = searchResults[0]?.title || pageTitle;
-
-    const summary = `### Autonomous Agent Results\n\n**Search Query:** "${cleanSearchTerms}"\n\n**Top Search Results:**\n${resultListFormatted}\n\n**Raw Extracted Content:**\n${cleanBodySnippet.slice(0, 500)}...`;
-    const resultText = `Successfully executed query: "${cleanSearchTerms}". Found top result: ${primaryTitle}`;
-
-    addLog("SUCCESS", `Execution finished in ${Date.now() - startTime}ms`);
+    addLog("SUCCESS", `Extracted ${results.length} clean items in ${Date.now() - startTime}ms`);
 
     return res.status(200).json({
       success: true,
-      objective: rawObjective,
-      query: cleanSearchTerms,
-      title: primaryTitle,
-      pageTitle,
-      results: searchResults,
-      snippet: cleanBodySnippet,
+      query: cleanQuery,
+      engine: engineUsed,
+      resultsCount: results.length,
+      results,
       summary,
-      result: resultText,
-      logs,
-      plan: [
-        { action: "goto", url: searchUrl },
-        { action: "extract", selector: "organic_results" }
-      ]
+      result: results.length > 0 ? `Found ${results.length} results for "${cleanQuery}"` : `No results found for "${cleanQuery}"`,
+      logs
     });
   } catch (err) {
     console.error(`[Execution Error]: ${err.message}`);
     addLog("FAILED", `Error: ${err.message}`, "FAILED");
     return res.status(500).json({
       success: false,
+      query: cleanQuery || rawQuery,
+      results: [],
       error: err.message,
       logs
     });
@@ -200,9 +239,10 @@ async function handleTaskExecution(req, res) {
   }
 }
 
-// Support both endpoint paths
-app.post("/run-task", handleTaskExecution);
-app.post("/api/agent/run", handleTaskExecution);
+// Endpoints
+app.post("/execute", handleExecuteTask);
+app.post("/run-task", handleExecuteTask);
+app.post("/api/agent/run", handleExecuteTask);
 
 const PORT = process.env.PORT || 3000;
 
