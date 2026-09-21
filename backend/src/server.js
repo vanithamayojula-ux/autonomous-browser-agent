@@ -27,30 +27,15 @@ app.get("/api/agent/health", (req, res) => {
   res.status(200).json({ status: "ok", service: "backend" });
 });
 
-// 1. FIX QUERY GENERATION: Enrich query with context (India, 2026, intent)
-function enrichQuery(rawQuery) {
+// Query Sanitizer Helper
+function sanitizeQuery(rawQuery) {
   if (!rawQuery) return "";
   let clean = rawQuery.trim().replace(/^["'\s]+|["'\s]+$/g, "");
   clean = clean.replace(/^(?:search\s+google\s+for|search\s+for|search|find|go\s+to|open)\s+/i, "").trim();
-
-  // Strip leading "best " or "top " for Bing to prevent dictionary/store acronym collision
-  const baseQuery = clean.replace(/^(best|top)\s+/i, "").trim();
-
-  let enriched = baseQuery;
-  if (!/\b(india|inr|rs|usa|usd|uk)\b/i.test(enriched)) {
-    enriched += " India";
-  }
-  if (!/\b(2025|2026|2027)\b/i.test(enriched)) {
-    enriched += " 2026";
-  }
-  if (/\b(laptop|laptops|notebook|pc|macbook)\b/i.test(clean) && !/\b(review|reviews|buying guide|guide)\b/i.test(enriched)) {
-    enriched += " reviews buying guide";
-  }
-
-  return enriched;
+  return clean || rawQuery.trim();
 }
 
-// 5. BLOCK JUNK DOMAINS
+// Block Junk Domains
 const JUNK_DOMAINS = [
   "wikipedia.org",
   "youtube.com",
@@ -76,7 +61,7 @@ function isJunkDomain(link) {
   }
 }
 
-// Helper: Decode Bing redirect URLs (bing.com/ck/a?!...) to clean direct URLs
+// Decode Bing redirect URLs (bing.com/ck/a?!...) to clean direct destination URLs
 function decodeBingLink(link) {
   if (link && link.includes('bing.com/ck/a?!')) {
     try {
@@ -92,7 +77,30 @@ function decodeBingLink(link) {
   return link;
 }
 
-// 9. BONUS: Calculate relevance score for sorting
+// Relevance Validation Rule
+function isRelevantResult(item, rawQuery) {
+  if (!item || !item.title) return false;
+  const combined = (item.title + " " + item.snippet + " " + item.link).toLowerCase();
+
+  // Rejection rules
+  if (combined.includes("dictionary") || combined.includes("meaning") || combined.includes("undertaking.net")) {
+    return false;
+  }
+
+  // Acceptance rules for product/laptop queries
+  if (/\b(laptop|laptops|notebook|pc|macbook)\b/i.test(rawQuery)) {
+    const laptopKeywords = [
+      "laptop", "notebook", "macbook", "pc", "computer", "asus", "hp", "lenovo",
+      "dell", "acer", "msi", "apple", "intel", "ryzen", "core", "ram", "ssd",
+      "amazon", "flipkart", "croma", "smartprix", "91mobiles", "digit", "tech", "best buy"
+    ];
+    return laptopKeywords.some(kw => combined.includes(kw));
+  }
+
+  return true;
+}
+
+// Calculate Relevance Score for Sorting
 function calculateRelevanceScore(title, snippet, rawQuery) {
   const combined = (title + " " + snippet).toLowerCase();
   const tokens = rawQuery.toLowerCase().split(/\s+/).filter(t => t.length > 2);
@@ -134,10 +142,10 @@ async function launchBrowserSafely() {
   }
 }
 
-// 2 & 3. USE BING AS PRIMARY ENGINE & FIX EXTRACTION LOGIC
+// Bing Primary Scraper
 async function scrapeBing(page, query, steps) {
   const encodedQuery = encodeURIComponent(query);
-  const url = `https://www.bing.com/search?q=${encodedQuery}&setmkt=en-US&setlang=en-US`;
+  const url = `https://www.bing.com/search?q=${encodedQuery}`;
 
   console.log(`[Bing Engine] Navigating to: ${url}`);
   steps.push(`Navigated to Bing search URL: ${url}`);
@@ -157,7 +165,7 @@ async function scrapeBing(page, query, steps) {
     rows.forEach((row) => {
       const titleEl = row.querySelector('h2');
       const linkEl = row.querySelector('h2 a') || row.querySelector('a');
-      const snippetEl = row.querySelector('.b_caption p') || row.querySelector('.b_algoSub p') || row.querySelector('p');
+      const snippetEl = row.querySelector('.b_caption p') || row.querySelector('.b_algoSub p') || row.querySelector('.b_caption') || row.querySelector('p');
 
       const title = titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : '';
       const link = linkEl ? (linkEl.href || linkEl.getAttribute('href') || '') : '';
@@ -171,19 +179,16 @@ async function scrapeBing(page, query, steps) {
     return items;
   });
 
-  // Decode links on server side
   scraped.forEach(item => {
     item.link = decodeBingLink(item.link);
   });
 
-  // 6. ADD DEBUGGING (MANDATORY)
   console.log(`[Debug Log] Total scraped results from Bing: ${scraped.length}`);
   steps.push(`Total scraped results from Bing: ${scraped.length}`);
 
   if (scraped.length === 0) {
     const fullHtml = await page.content();
-    console.log(`[Debug Log] 0 results found. Full Page HTML length: ${fullHtml.length}`);
-    console.log(`[Debug Log] Full Page HTML snippet:`, fullHtml.substring(0, 1500));
+    console.log(`[Debug Log] 0 results found. Full Page HTML snippet:`, fullHtml.substring(0, 1500));
   } else {
     console.log(`[Debug Log] First raw scraped result:`, JSON.stringify(scraped[0], null, 2));
   }
@@ -191,7 +196,41 @@ async function scrapeBing(page, query, steps) {
   return scraped;
 }
 
-// 4. ADD STRICT RELEVANCE FILTERING & 7. FAILSAFE SYSTEM
+// DuckDuckGo Secondary Fallback Scraper
+async function scrapeDuckDuckGo(page, query, steps) {
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  console.log(`[DuckDuckGo Fallback] Navigating to: ${url}`);
+  steps.push(`Fallback: Navigated to DuckDuckGo search URL: ${url}`);
+
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
+
+  const scraped = await page.evaluate(() => {
+    const items = [];
+    const rows = document.querySelectorAll('.result');
+    rows.forEach(row => {
+      const a = row.querySelector('.result__title a');
+      const snippetEl = row.querySelector('.result__snippet');
+      if (a) {
+        const title = (a.textContent || '').trim();
+        let link = a.getAttribute('href') || '';
+        if (link.includes('uddg=')) {
+          const match = link.match(/uddg=([^&]+)/);
+          if (match && match[1]) link = decodeURIComponent(match[1]);
+        }
+        const snippet = snippetEl ? (snippetEl.textContent || '').trim() : '';
+        if (title && link.startsWith('http')) {
+          items.push({ title, link, snippet });
+        }
+      }
+    });
+    return items;
+  });
+
+  steps.push(`DuckDuckGo scraped results: ${scraped.length}`);
+  return scraped;
+}
+
+// Multi-Tier Pipeline Execution
 async function runSearchPipeline(rawQuery, steps) {
   const browser = await launchBrowserSafely();
 
@@ -208,47 +247,32 @@ async function runSearchPipeline(rawQuery, steps) {
     });
 
     const page = await context.newPage();
+    const cleanQuery = sanitizeQuery(rawQuery);
 
-    // 1. Enrich Query
-    const enrichedQuery = enrichQuery(rawQuery);
-    console.log(`[Query Generation] Raw: "${rawQuery}" -> Enriched: "${enrichedQuery}"`);
-    steps.push(`Enriched query: "${enrichedQuery}"`);
+    steps.push(`Query: "${cleanQuery}"`);
 
-    // 2. Scrape Bing
-    let scraped = await scrapeBing(page, enrichedQuery, steps);
+    // Tier 1: Bing Primary with clean query
+    let scraped = await scrapeBing(page, cleanQuery, steps);
+    let filtered = scraped.filter(item => !isJunkDomain(item.link) && isRelevantResult(item, cleanQuery));
 
-    // 5. Block Junk Domains
-    let filtered = scraped.filter(item => !isJunkDomain(item.link));
-
-    // 4. Strict Relevance Filter
-    const isLaptopQuery = /\b(laptop|laptops|notebook|pc|macbook)\b/i.test(rawQuery);
-    if (isLaptopQuery) {
-      filtered = filtered.filter(item => {
-        const combined = (item.title + " " + item.snippet).toLowerCase();
-        return combined.includes("laptop") || combined.includes("notebook") || combined.includes("macbook");
-      });
-    }
-
-    console.log(`[Debug Log] Filtered results count: ${filtered.length}`);
     steps.push(`Filtered results count: ${filtered.length}`);
 
-    // 7. FAILSAFE SYSTEM: Retry if filtered < 3
+    // Tier 2: Bing Failsafe with stripped "best/top" prefix if < 3
+    if (filtered.length < 3 && /^(best|top)\s+/i.test(cleanQuery)) {
+      const failsafeBingQuery = cleanQuery.replace(/^(best|top)\s+/i, "").trim();
+      steps.push(`Failsafe 1: Retrying Bing with optimized query: "${failsafeBingQuery}"`);
+
+      scraped = await scrapeBing(page, failsafeBingQuery, steps);
+      filtered = scraped.filter(item => !isJunkDomain(item.link) && isRelevantResult(item, cleanQuery));
+      steps.push(`Failsafe 1 Filtered results count: ${filtered.length}`);
+    }
+
+    // Tier 3: DuckDuckGo Fallback if < 3
     if (filtered.length < 3) {
-      const failsafeQuery = "laptops under 70000 India Amazon Flipkart review";
-      console.log(`[Failsafe Triggered] Results count (${filtered.length}) < 3. Retrying with failsafe query: "${failsafeQuery}"`);
-      steps.push(`Failsafe triggered. Retrying with query: "${failsafeQuery}"`);
-
-      scraped = await scrapeBing(page, failsafeQuery, steps);
-
-      filtered = scraped.filter(item => !isJunkDomain(item.link));
-      if (isLaptopQuery) {
-        filtered = filtered.filter(item => {
-          const combined = (item.title + " " + item.snippet).toLowerCase();
-          return combined.includes("laptop") || combined.includes("notebook") || combined.includes("macbook");
-        });
-      }
-      console.log(`[Debug Log] Failsafe Filtered results count: ${filtered.length}`);
-      steps.push(`Failsafe Filtered results count: ${filtered.length}`);
+      steps.push(`Failsafe 2: Triggering DuckDuckGo fallback for: "${cleanQuery}"`);
+      scraped = await scrapeDuckDuckGo(page, cleanQuery, steps);
+      filtered = scraped.filter(item => !isJunkDomain(item.link) && isRelevantResult(item, cleanQuery));
+      steps.push(`Failsafe 2 Filtered results count: ${filtered.length}`);
     }
 
     if (filtered.length > 0) {
@@ -256,14 +280,13 @@ async function runSearchPipeline(rawQuery, steps) {
       steps.push(`First valid result: "${filtered[0].title}"`);
     }
 
-    // 9. BONUS: Sort by relevance score
+    // Sort by relevance
     filtered.sort((a, b) => {
-      const scoreA = calculateRelevanceScore(a.title, a.snippet, rawQuery);
-      const scoreB = calculateRelevanceScore(b.title, b.snippet, rawQuery);
+      const scoreA = calculateRelevanceScore(a.title, a.snippet, cleanQuery);
+      const scoreB = calculateRelevanceScore(b.title, b.snippet, cleanQuery);
       return scoreB - scoreA;
     });
 
-    // 8. FINAL OUTPUT: Return Top 5 clean, relevant results
     return filtered.slice(0, 5);
   } finally {
     if (browser) {
