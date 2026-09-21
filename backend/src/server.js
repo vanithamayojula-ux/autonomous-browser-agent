@@ -27,6 +27,17 @@ app.get("/api/agent/health", (req, res) => {
   res.status(200).json({ status: "ok", service: "backend" });
 });
 
+// Helper: Query Sanitizer to strip enclosing quotes and command prefixes
+function sanitizeQuery(rawObjective) {
+  if (!rawObjective) return "";
+  let clean = rawObjective.trim();
+  // Strip leading and trailing quotes or brackets
+  clean = clean.replace(/^["'\s]+|["'\s]+$/g, "");
+  // Strip command prefixes like "Search Google for", "Search for", "Find"
+  clean = clean.replace(/^(?:search\s+google\s+for|search\s+for|search|find|go\s+to|open)\s+/i, "");
+  return clean.trim() || rawObjective.replace(/["']/g, "").trim();
+}
+
 // Helper: Safely launch Chromium with dynamic self-healing browser installer
 async function launchBrowserSafely() {
   const launchOptions = {
@@ -73,7 +84,7 @@ async function handleTaskExecution(req, res) {
     logs.push({
       timestamp: new Date().toISOString(),
       stepIndex: logs.length + 1,
-      totalSteps: 3,
+      totalSteps: 4,
       action,
       status,
       detail
@@ -83,8 +94,9 @@ async function handleTaskExecution(req, res) {
   let browser = null;
 
   try {
-    const cleanObjective = objective.trim();
-    console.log(`[POST Task] Objective: "${cleanObjective}"`);
+    const rawObjective = objective.trim();
+    const cleanSearchTerms = sanitizeQuery(rawObjective);
+    console.log(`[POST Task] Raw Objective: "${rawObjective}" -> Sanitized Search Query: "${cleanSearchTerms}"`);
 
     addLog("BROWSER_INIT", "Launching Playwright Chromium engine with stealth headers...");
     browser = await launchBrowserSafely();
@@ -100,27 +112,38 @@ async function handleTaskExecution(req, res) {
 
     const page = await context.newPage();
 
-    // Direct search URL navigation (100% resilient, zero input selector timeout)
-    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(cleanObjective)}`;
-    addLog("goto", `Navigating directly to search URL: ${searchUrl}`);
-    await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
+    // 1. Primary Navigation to Search Engine (DuckDuckGo HTML)
+    let searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(cleanSearchTerms)}`;
+    addLog("goto", `Navigating to search URL: ${searchUrl}`);
+    await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
 
-    // Extract search result titles and snippets
+    let pageTitle = await page.title();
+    let bodyText = (await page.textContent("body")) || "";
+
+    // 2. Fallback check: If DuckDuckGo limits or blocks, switch to Bing Search
+    if (!bodyText || bodyText.includes("If this persists, please email us") || bodyText.length < 300) {
+      searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(cleanSearchTerms)}`;
+      addLog("fallback", `Primary engine limited. Switching to search engine: ${searchUrl}`);
+      await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+      pageTitle = await page.title();
+      bodyText = (await page.textContent("body")) || "";
+    }
+
+    // 3. Extract organic search result titles and snippets
     addLog("extract", "Extracting result titles, snippets, and page content...");
-    const pageTitle = await page.title();
 
-    // Extract organic search result titles and snippets
     const searchResults = await page.evaluate(() => {
       const items = [];
-      const links = document.querySelectorAll('.result__title a, .result__a, h2 a');
-      const snippets = document.querySelectorAll('.result__snippet');
-      
+      // Selectors matching both DuckDuckGo and Bing organic headers
+      const links = document.querySelectorAll('.result__title a, .result__a, h2 a, .b_algo h2 a');
+      const snippets = document.querySelectorAll('.result__snippet, .b_caption p, p');
+
       links.forEach((el, index) => {
-        if (index < 5) {
+        if (items.length < 5) {
           const title = (el.textContent || '').trim();
           const href = el.getAttribute('href') || '';
           const snippetText = snippets[index] ? (snippets[index].textContent || '').trim() : '';
-          if (title) {
+          if (title && title.length > 3 && !title.toLowerCase().includes('javascript')) {
             items.push({ title, href, snippet: snippetText });
           }
         }
@@ -128,9 +151,9 @@ async function handleTaskExecution(req, res) {
       return items;
     });
 
-    const bodyText = await page.textContent("body");
-    const cleanBodySnippet = (bodyText || '')
+    const cleanBodySnippet = bodyText
       .replace(/\s+/g, ' ')
+      .replace(/<[^>]*>/g, '')
       .trim()
       .slice(0, 600);
 
@@ -140,14 +163,15 @@ async function handleTaskExecution(req, res) {
 
     const primaryTitle = searchResults[0]?.title || pageTitle;
 
-    const summary = `### Autonomous Agent Results\n\n**Objective:** "${cleanObjective}"\n\n**Top Search Results:**\n${resultListFormatted}\n\n**Raw Extracted Content:**\n${cleanBodySnippet.slice(0, 400)}...`;
-    const resultText = `Successfully executed objective: "${cleanObjective}". Found result: ${primaryTitle}`;
+    const summary = `### Autonomous Agent Results\n\n**Search Query:** "${cleanSearchTerms}"\n\n**Top Search Results:**\n${resultListFormatted}\n\n**Raw Extracted Content:**\n${cleanBodySnippet.slice(0, 500)}...`;
+    const resultText = `Successfully executed query: "${cleanSearchTerms}". Found top result: ${primaryTitle}`;
 
     addLog("SUCCESS", `Execution finished in ${Date.now() - startTime}ms`);
 
     return res.status(200).json({
       success: true,
-      objective: cleanObjective,
+      objective: rawObjective,
+      query: cleanSearchTerms,
       title: primaryTitle,
       pageTitle,
       results: searchResults,
@@ -157,7 +181,7 @@ async function handleTaskExecution(req, res) {
       logs,
       plan: [
         { action: "goto", url: searchUrl },
-        { action: "extract", selector: ".result__title" }
+        { action: "extract", selector: "organic_results" }
       ]
     });
   } catch (err) {
