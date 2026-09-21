@@ -35,8 +35,7 @@ async function launchBrowserSafely() {
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
-      "--disable-accelerated-2d-canvas",
-      "--disable-gpu"
+      "--disable-blink-features=AutomationControlled"
     ]
   };
 
@@ -74,7 +73,7 @@ async function handleTaskExecution(req, res) {
     logs.push({
       timestamp: new Date().toISOString(),
       stepIndex: logs.length + 1,
-      totalSteps: 4,
+      totalSteps: 5,
       action,
       status,
       detail
@@ -87,68 +86,83 @@ async function handleTaskExecution(req, res) {
     const cleanObjective = objective.trim();
     console.log(`[POST Task] Objective: "${cleanObjective}"`);
 
-    addLog("BROWSER_INIT", "Launching Playwright Chromium in cloud headless mode...");
+    addLog("BROWSER_INIT", "Launching Playwright Chromium engine with stealth headers...");
     browser = await launchBrowserSafely();
 
     const context = await browser.newContext({
       viewport: { width: 1280, height: 800 },
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      extraHTTPHeaders: {
+        "Accept-Language": "en-US,en;q=0.9",
+        "Upgrade-Insecure-Requests": "1"
+      }
     });
 
     const page = await context.newPage();
 
-    // 1. Open Google
-    addLog("goto", "Navigating to https://www.google.com");
-    await page.goto("https://www.google.com", { waitUntil: "domcontentloaded", timeout: 20000 });
+    // Determine target search URL (DuckDuckGo avoids CAPTCHA walls on cloud servers)
+    const targetUrl = "https://duckduckgo.com";
+    addLog("goto", `Navigating to ${targetUrl}`);
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
 
-    // 2. Search objective
-    addLog("type", `Searching query: "${cleanObjective}"`);
-    const searchSelector = 'textarea[name="q"], input[name="q"]';
+    // 2. Type objective query
+    addLog("type", `Typing search query: "${cleanObjective}"`);
+    const searchSelector = 'input[name="q"], input[type="text"]';
     await page.waitForSelector(searchSelector, { timeout: 10000 });
     await page.fill(searchSelector, cleanObjective);
     await page.keyboard.press("Enter");
 
     // 3. Wait for search results
     addLog("wait", "Waiting for search results to load...");
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(3000);
 
-    // 4. Extract search results
-    addLog("extract", "Extracting result titles and page content...");
+    // 4. Extract search result titles and snippets
+    addLog("extract", "Extracting result titles, snippets, and page content...");
     const pageTitle = await page.title();
-    
-    let firstResultTitle = pageTitle;
-    try {
-      const h3Element = await page.$("h3");
-      if (h3Element) {
-        const h3Text = await h3Element.textContent();
-        if (h3Text && h3Text.trim()) {
-          firstResultTitle = h3Text.trim();
+
+    // Extract top organic result titles and links
+    const results = await page.evaluate(() => {
+      const items = [];
+      const titleElements = document.querySelectorAll('h2, a[data-testid="result-title-a"], article h2');
+      titleElements.forEach((el, index) => {
+        if (index < 5) {
+          const text = (el.textContent || '').trim();
+          if (text && text.length > 5) items.push(text);
         }
-      }
-    } catch (e) {}
+      });
+      return items;
+    });
 
     const bodyText = await page.textContent("body");
-    const snippet = (bodyText || "").replace(/\s+/g, " ").trim().slice(0, 800);
+    // Clean snippet text, stripping excessive whitespace
+    const cleanSnippet = (bodyText || '')
+      .replace(/\s+/g, ' ')
+      .replace(/<[^>]*>/g, '')
+      .trim();
 
-    const summary = `### Autonomous Agent Summary\n\n**Objective:** ${cleanObjective}\n\n**Primary Result Found:** ${firstResultTitle}\n\n**Page Title:** ${pageTitle}\n\n**Extracted Snippet:**\n${snippet.slice(0, 350)}...`;
-    const resultText = `Successfully executed objective: "${cleanObjective}". Found result: ${firstResultTitle}`;
+    const resultListText = results.length > 0
+      ? results.map((r, i) => `${i + 1}. ${r}`).join('\n')
+      : `Found page title: ${pageTitle}`;
+
+    const summary = `### Autonomous Agent Results\n\n**Objective:** "${cleanObjective}"\n\n**Top Extracted Results:**\n${resultListText}\n\n**Extracted Content Snippet:**\n${cleanSnippet.slice(0, 500)}...`;
 
     addLog("SUCCESS", `Execution finished in ${Date.now() - startTime}ms`);
 
     return res.status(200).json({
       success: true,
       objective: cleanObjective,
-      title: firstResultTitle,
+      title: results[0] || pageTitle,
       pageTitle,
-      snippet,
+      results,
+      snippet: cleanSnippet.slice(0, 600),
       summary,
-      result: resultText,
+      result: `Successfully searched for "${cleanObjective}". Top result: ${results[0] || pageTitle}`,
       logs,
       plan: [
-        { action: "goto", url: "https://www.google.com" },
+        { action: "goto", url: targetUrl },
         { action: "type", selector: searchSelector, text: cleanObjective },
-        { action: "wait", durationMs: 2500 },
-        { action: "extract", selector: "body" }
+        { action: "wait", durationMs: 3000 },
+        { action: "extract", selector: "results" }
       ]
     });
   } catch (err) {
@@ -167,7 +181,7 @@ async function handleTaskExecution(req, res) {
   }
 }
 
-// Support both endpoint paths for seamless frontend compatibility
+// Support both endpoint paths
 app.post("/run-task", handleTaskExecution);
 app.post("/api/agent/run", handleTaskExecution);
 
