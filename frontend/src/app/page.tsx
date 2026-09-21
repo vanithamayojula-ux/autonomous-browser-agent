@@ -24,7 +24,6 @@ export default function Home() {
     setSummary(null);
     setLogs([]);
 
-    // Clean target URL (remove trailing slash if present)
     const baseUrl = backendUrl.trim().replace(/\/+$/, '');
 
     try {
@@ -35,7 +34,6 @@ export default function Home() {
       });
 
       if (response.status === 404) {
-        // Fallback endpoint test
         response = await fetch(`${baseUrl}/api/agent/run`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -60,7 +58,7 @@ export default function Home() {
     } catch (err) {
       const msg = (err as Error).message;
       if (msg.includes('Failed to fetch')) {
-        setError(`Failed to connect to backend at "${baseUrl}". Please check if your Render backend is live, CORS is enabled, or update the Backend URL input.`);
+        setError(`Failed to connect to backend at "${baseUrl}". Ensure your Render backend is live and CORS is enabled.`);
       } else {
         setError(msg);
       }
@@ -97,17 +95,19 @@ export default function Home() {
         {/* Left Column: Input & Controls */}
         <div className="lg:col-span-5 space-y-6">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
-            {/* Backend URL Input for Vercel -> Render connection */}
+            {/* Backend URL Input */}
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-400 flex items-center space-x-1.5">
+              <label htmlFor="backendUrl" className="text-xs font-semibold text-slate-400 flex items-center space-x-1.5">
                 <LinkIcon className="w-3.5 h-3.5 text-indigo-400" />
                 <span>Render Backend Service URL</span>
               </label>
               <input
+                id="backendUrl"
+                name="backendUrl"
                 type="text"
                 value={backendUrl}
                 onChange={(e) => setBackendUrl(e.target.value)}
-                placeholder="https://your-render-backend.onrender.com"
+                placeholder="https://autonomous-browser-agent.onrender.com"
                 disabled={isExecuting}
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono transition"
               />
@@ -115,10 +115,12 @@ export default function Home() {
 
             <div className="flex items-center space-x-2 text-sm font-semibold text-slate-200 pt-2">
               <Sparkles className="w-4 h-4 text-indigo-400" />
-              <span>Define Task Objective</span>
+              <label htmlFor="objective">Define Task Objective</label>
             </div>
 
             <textarea
+              id="objective"
+              name="objective"
               value={objective}
               onChange={(e) => setObjective(e.target.value)}
               placeholder="e.g. Search Google for best backend projects for beginners 2026."
