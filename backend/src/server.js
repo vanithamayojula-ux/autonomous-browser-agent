@@ -27,21 +27,46 @@ app.get("/api/agent/health", (req, res) => {
   res.status(200).json({ status: "ok", service: "backend" });
 });
 
-// Helper: Query Sanitizer
+// Query Sanitizer & Enhancer Utility
 function sanitizeQuery(rawObjective) {
   if (!rawObjective) return "";
   let clean = rawObjective.trim();
   clean = clean.replace(/^["'\s]+|["'\s]+$/g, "");
   clean = clean.replace(/^(?:search\s+google\s+for|search\s+for|search|find|go\s+to|open)\s+/i, "");
-  return clean.trim() || rawObjective.replace(/["']/g, "").trim();
+  clean = clean.trim() || rawObjective.replace(/["']/g, "").trim();
+
+  // Enhance numeric budget queries (e.g., "laptops under 70000" -> "laptops under 70000 in India INR")
+  if (/\b(?:laptop|laptops|phone|phones|mobile|pc)\b/i.test(clean) && /\b\d{4,6}\b/.test(clean) && !/\b(in india|in usa|usd|inr|rs)\b/i.test(clean)) {
+    clean += " in India INR";
+  }
+
+  return clean;
 }
 
 // Helper: Filter out non-English / CJK script titles
 function isEnglishResult(title, snippet) {
   const combined = (title + " " + snippet);
-  // Check for CJK / non-Latin characters (Japanese, Chinese, Korean, Cyrillic)
-  const hasForeignScript = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\u0400-\u04ff]/.test(combined);
+  const hasForeignScript = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\u0400-\u04ff\u00C0-\u024F]/.test(combined);
   return !hasForeignScript;
+}
+
+// Helper: Strict Keyword Relevance Filter
+function isRelevantResult(title, snippet, query) {
+  const combined = (title + " " + snippet).toLowerCase();
+  const qLower = query.toLowerCase();
+
+  // If query relates to laptops/computers, mandate laptop/tech domain keywords
+  if (qLower.includes("laptop") || qLower.includes("notebook") || qLower.includes("computer")) {
+    const laptopKeywords = [
+      "laptop", "notebook", "pc", "macbook", "asus", "hp", "lenovo", "dell", 
+      "acer", "msi", "apple", "intel", "ryzen", "core", "ram", "ssd", "display", 
+      "gadget", "price", "digit", "flipkart", "amazon", "smartprix", "91mobiles", "tech"
+    ];
+    const matchesKeyword = laptopKeywords.some(k => combined.includes(k));
+    if (!matchesKeyword) return false;
+  }
+
+  return true;
 }
 
 // Helper: Safely launch Chromium with dynamic self-healing browser installer
@@ -167,7 +192,7 @@ INSTRUCTIONS:
 1. Provide a clear, natural-language executive summary.
 2. Group the top findings logically (e.g. for products/laptops, list top models with key specs, estimated prices, and target audience; for topics, provide key steps or components).
 3. Use markdown formatting with clear headings, bullet points, bold text, and clickable link citations.
-4. DO NOT return raw code or Japanese/foreign text. Deliver a high-value answer directly addressing the user's request.
+4. DO NOT return raw code or Japanese/Spanish/foreign text. Deliver a high-value answer directly addressing the user's request.
 `;
 
   if (apiKey) {
@@ -266,7 +291,7 @@ async function handleTaskExecution(req, res) {
     addLog("extract_duckduckgo", `Searching DuckDuckGo (en-US) for: "${cleanQuery}"`);
     try {
       const rawDd = await extractDuckDuckGo(page, cleanQuery);
-      results = rawDd.filter(r => isEnglishResult(r.title, r.snippet));
+      results = rawDd.filter(r => isEnglishResult(r.title, r.snippet) && isRelevantResult(r.title, r.snippet, cleanQuery));
     } catch (e) {
       console.warn(`DuckDuckGo extractor warning: ${e.message}`);
     }
@@ -277,7 +302,7 @@ async function handleTaskExecution(req, res) {
       addLog("fallback_bing", `Switching to Bing (en-US) for English search results...`);
       try {
         const rawBing = await extractBing(page, cleanQuery);
-        results = rawBing.filter(r => isEnglishResult(r.title, r.snippet));
+        results = rawBing.filter(r => isEnglishResult(r.title, r.snippet) && isRelevantResult(r.title, r.snippet, cleanQuery));
       } catch (e) {
         console.warn(`Bing extractor warning: ${e.message}`);
       }
