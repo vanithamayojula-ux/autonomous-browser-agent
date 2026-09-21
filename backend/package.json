@@ -4,7 +4,8 @@
   "description": "Render non-root zero-build Playwright backend API",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "postinstall": "npx playwright install chromium chromium-headless-shell"
   },
   "dependencies": {
     "cors": "^2.8.5",
