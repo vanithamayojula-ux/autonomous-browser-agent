@@ -35,7 +35,7 @@ function sanitizeQuery(rawQuery) {
   return clean || rawQuery.trim();
 }
 
-// Block Junk Domains
+// Block Junk & Acronym Domains
 const JUNK_DOMAINS = [
   "wikipedia.org",
   "youtube.com",
@@ -46,12 +46,13 @@ const JUNK_DOMAINS = [
   "thefreedictionary.com",
   "yometro.com",
   "undertaking.net",
+  "bestundertaking.com",
   "britannica.com",
   "wordreference.com"
 ];
 
 function isJunkDomain(link) {
-  if (!link) return true;
+  if (!link) return false;
   try {
     const urlObj = new URL(link);
     const hostname = urlObj.hostname.toLowerCase();
@@ -82,8 +83,8 @@ function isRelevantResult(item, rawQuery) {
   if (!item || !item.title) return false;
   const combined = (item.title + " " + item.snippet + " " + item.link).toLowerCase();
 
-  // Rejection rules
-  if (combined.includes("dictionary") || combined.includes("meaning") || combined.includes("undertaking.net")) {
+  // Rejection rules for dictionary / transport acronym pages
+  if (combined.includes("dictionary") || combined.includes("meaning") || combined.includes("undertaking")) {
     return false;
   }
 
@@ -153,31 +154,34 @@ async function scrapeBing(page, query, steps) {
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
 
   try {
-    await page.waitForSelector('li.b_algo', { timeout: 10000 });
-  } catch (err) {
-    console.warn(`[Bing Engine] waitForSelector 'li.b_algo' timed out: ${err.message}`);
-  }
+    await page.waitForSelector('li.b_algo', { timeout: 8000 });
+  } catch (err) {}
 
-  const scraped = await page.evaluate(() => {
-    const rows = document.querySelectorAll('li.b_algo');
-    const items = [];
+  let scraped = [];
+  try {
+    scraped = await page.evaluate(() => {
+      const rows = document.querySelectorAll('li.b_algo');
+      const items = [];
 
-    rows.forEach((row) => {
-      const titleEl = row.querySelector('h2');
-      const linkEl = row.querySelector('h2 a') || row.querySelector('a');
-      const snippetEl = row.querySelector('.b_caption p') || row.querySelector('.b_algoSub p') || row.querySelector('.b_caption') || row.querySelector('p');
+      rows.forEach((row) => {
+        const titleEl = row.querySelector('h2') || row.querySelector('a');
+        const linkEl = row.querySelector('h2 a') || row.querySelector('a');
+        const snippetEl = row.querySelector('.b_caption p') || row.querySelector('.b_caption') || row.querySelector('.b_algoSub') || row.querySelector('.b_lineclamp2') || row.querySelector('.b_lineclamp3') || row.querySelector('p');
 
-      const title = titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : '';
-      const link = linkEl ? (linkEl.href || linkEl.getAttribute('href') || '') : '';
-      const snippet = snippetEl ? (snippetEl.innerText || snippetEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
+        const title = titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : '';
+        const link = linkEl ? (linkEl.href || linkEl.getAttribute('href') || '') : '';
+        const snippet = snippetEl ? (snippetEl.innerText || snippetEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
 
-      if (title && link && link.startsWith('http')) {
-        items.push({ title, link, snippet });
-      }
+        if (title && link && link.startsWith('http')) {
+          items.push({ title, link, snippet });
+        }
+      });
+
+      return items;
     });
-
-    return items;
-  });
+  } catch (e) {
+    console.warn(`[Bing evaluate error]: ${e.message}`);
+  }
 
   scraped.forEach(item => {
     item.link = decodeBingLink(item.link);
@@ -187,7 +191,7 @@ async function scrapeBing(page, query, steps) {
   steps.push(`Total scraped results from Bing: ${scraped.length}`);
 
   if (scraped.length === 0) {
-    const fullHtml = await page.content();
+    const fullHtml = await page.content().catch(() => "");
     console.log(`[Debug Log] 0 results found. Full Page HTML snippet:`, fullHtml.substring(0, 1500));
   } else {
     console.log(`[Debug Log] First raw scraped result:`, JSON.stringify(scraped[0], null, 2));
@@ -196,35 +200,41 @@ async function scrapeBing(page, query, steps) {
   return scraped;
 }
 
-// DuckDuckGo Secondary Fallback Scraper
+// DuckDuckGo Secondary Fallback Scraper (Safe against Execution Context Destroyed error)
 async function scrapeDuckDuckGo(page, query, steps) {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
   console.log(`[DuckDuckGo Fallback] Navigating to: ${url}`);
   steps.push(`Fallback: Navigated to DuckDuckGo search URL: ${url}`);
 
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
+  await page.goto(url, { waitUntil: "load", timeout: 15000 }).catch(() => {});
+  await page.waitForTimeout(1000);
 
-  const scraped = await page.evaluate(() => {
-    const items = [];
-    const rows = document.querySelectorAll('.result');
-    rows.forEach(row => {
-      const a = row.querySelector('.result__title a');
-      const snippetEl = row.querySelector('.result__snippet');
-      if (a) {
-        const title = (a.textContent || '').trim();
-        let link = a.getAttribute('href') || '';
-        if (link.includes('uddg=')) {
-          const match = link.match(/uddg=([^&]+)/);
-          if (match && match[1]) link = decodeURIComponent(match[1]);
+  let scraped = [];
+  try {
+    scraped = await page.evaluate(() => {
+      const items = [];
+      const rows = document.querySelectorAll('.result');
+      rows.forEach(row => {
+        const a = row.querySelector('.result__title a');
+        const snippetEl = row.querySelector('.result__snippet');
+        if (a) {
+          const title = (a.textContent || '').trim();
+          let link = a.getAttribute('href') || '';
+          if (link.includes('uddg=')) {
+            const match = link.match(/uddg=([^&]+)/);
+            if (match && match[1]) link = decodeURIComponent(match[1]);
+          }
+          const snippet = snippetEl ? (snippetEl.textContent || '').trim() : '';
+          if (title && link.startsWith('http')) {
+            items.push({ title, link, snippet });
+          }
         }
-        const snippet = snippetEl ? (snippetEl.textContent || '').trim() : '';
-        if (title && link.startsWith('http')) {
-          items.push({ title, link, snippet });
-        }
-      }
+      });
+      return items;
     });
-    return items;
-  });
+  } catch (e) {
+    console.warn(`[DuckDuckGo evaluate error]: ${e.message}`);
+  }
 
   steps.push(`DuckDuckGo scraped results: ${scraped.length}`);
   return scraped;
@@ -251,18 +261,21 @@ async function runSearchPipeline(rawQuery, steps) {
 
     steps.push(`Query: "${cleanQuery}"`);
 
-    // Tier 1: Bing Primary with clean query
-    let scraped = await scrapeBing(page, cleanQuery, steps);
+    // Tier 1: Optimized Bing search target (strip leading "best/top" to prevent acronym collision)
+    let searchTarget = cleanQuery;
+    if (/^(best|top)\s+/i.test(cleanQuery)) {
+      searchTarget = cleanQuery.replace(/^(best|top)\s+/i, "").trim();
+    }
+
+    let scraped = await scrapeBing(page, searchTarget, steps);
     let filtered = scraped.filter(item => !isJunkDomain(item.link) && isRelevantResult(item, cleanQuery));
 
     steps.push(`Filtered results count: ${filtered.length}`);
 
-    // Tier 2: Bing Failsafe with stripped "best/top" prefix if < 3
-    if (filtered.length < 3 && /^(best|top)\s+/i.test(cleanQuery)) {
-      const failsafeBingQuery = cleanQuery.replace(/^(best|top)\s+/i, "").trim();
-      steps.push(`Failsafe 1: Retrying Bing with optimized query: "${failsafeBingQuery}"`);
-
-      scraped = await scrapeBing(page, failsafeBingQuery, steps);
+    // Tier 2: Failsafe Bing with raw cleanQuery if < 3
+    if (filtered.length < 3) {
+      steps.push(`Failsafe 1: Retrying Bing with raw query: "${cleanQuery}"`);
+      scraped = await scrapeBing(page, cleanQuery, steps);
       filtered = scraped.filter(item => !isJunkDomain(item.link) && isRelevantResult(item, cleanQuery));
       steps.push(`Failsafe 1 Filtered results count: ${filtered.length}`);
     }
@@ -280,7 +293,7 @@ async function runSearchPipeline(rawQuery, steps) {
       steps.push(`First valid result: "${filtered[0].title}"`);
     }
 
-    // Sort by relevance
+    // Sort by relevance score
     filtered.sort((a, b) => {
       const scoreA = calculateRelevanceScore(a.title, a.snippet, cleanQuery);
       const scoreB = calculateRelevanceScore(b.title, b.snippet, cleanQuery);
