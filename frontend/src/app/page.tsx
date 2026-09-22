@@ -66,7 +66,7 @@ export default function Home() {
       ]);
 
       setSteps(formattedSteps);
-      setProducts(data.products || []);
+      setProducts(data.products || data.results || []);
       setSummary(data.summary || data.answer || null);
       setExecutedQuery(data.query || targetQuery);
     } catch (err) {
@@ -76,6 +76,30 @@ export default function Home() {
       } else {
         setError(msg);
       }
+    } finally {
+      setIsExecuting(false);
+    }
+  };
+
+  const handleAnalyze = async () => {
+    if (!executedQuery && !query) return;
+    const targetQuery = executedQuery || query;
+    setIsExecuting(true);
+    const baseUrl = backendUrl.trim().replace(/\/+$/, '');
+    try {
+      const response = await fetch(`${baseUrl}/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: targetQuery, results: products }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.summary) {
+          setSummary(data.summary);
+        }
+      }
+    } catch (err) {
+      console.warn('Analyze call failed:', err);
     } finally {
       setIsExecuting(false);
     }
@@ -283,9 +307,19 @@ export default function Home() {
                     <ShoppingBag className="w-4 h-4 text-emerald-400" />
                     <span>Top Recommended Products</span>
                   </h3>
-                  <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full">
-                    {products.length} Products Found
-                  </span>
+                  <div className="flex items-center space-x-3">
+                    <button
+                      onClick={handleAnalyze}
+                      disabled={isExecuting}
+                      className="flex items-center space-x-1.5 text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition shadow-md shadow-indigo-600/20 active:scale-95 disabled:opacity-50"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Analyze Results</span>
+                    </button>
+                    <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full">
+                      {products.length} Items Found
+                    </span>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 gap-5">

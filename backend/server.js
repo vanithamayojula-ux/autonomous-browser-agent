@@ -531,6 +531,69 @@ async function handleTaskExecution(req, res) {
   }
 }
 
+const { executeAutonomousSearchPipeline } = require("../services/extractor/playwrightExtractor");
+
+app.get("/search", async (req, res) => {
+  const query = req.query.q || req.query.query;
+  const n = parseInt(req.query.n || "5", 10);
+
+  if (!query || typeof query !== "string" || !query.trim()) {
+    return res.status(400).json({ error: 'Missing or invalid query parameter "q"' });
+  }
+
+  try {
+    const data = await executeAutonomousSearchPipeline(query.trim(), n);
+    return res.status(200).json(data);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/search", async (req, res) => {
+  const query = req.body?.q || req.body?.query;
+  const n = parseInt(req.body?.n || "5", 10);
+
+  if (!query || typeof query !== "string" || !query.trim()) {
+    return res.status(400).json({ error: 'Missing or invalid "query" string in request body' });
+  }
+
+  try {
+    const data = await executeAutonomousSearchPipeline(query.trim(), n);
+    return res.status(200).json(data);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/analyze", async (req, res) => {
+  const query = req.body?.query || req.body?.q;
+  const items = req.body?.results || req.body?.products || [];
+
+  if (!query || typeof query !== "string" || !query.trim()) {
+    return res.status(400).json({ error: 'Missing or invalid "query" string in request body' });
+  }
+
+  try {
+    const summary = await synthesizeChatAnswer(query, items);
+    const topChoice = items.length > 0 ? items[0] : null;
+
+    return res.status(200).json({
+      query: query,
+      topChoice: topChoice,
+      summary: summary,
+      analysis: items.map((item, idx) => ({
+        rank: idx + 1,
+        title: item.title,
+        link: item.link,
+        score: item.score || 1.0,
+        verdict: item.price ? `Great option at ${item.price}` : "Verified web reference"
+      }))
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/execute", handleTaskExecution);
 app.post("/run-task", handleTaskExecution);
 app.post("/api/agent/run", handleTaskExecution);
