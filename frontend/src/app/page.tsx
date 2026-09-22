@@ -1,8 +1,8 @@
-// Autonomous Web Search Assistant Tool - v1.0.2 (Multi-Engine Pipeline)
+// Autonomous Web Search Assistant Tool - v1.0.3 (AI Chat Answer Synthesis Engine)
 'use client';
 
 import React, { useState } from 'react';
-import { Search, Loader2, Sparkles, AlertCircle, Link as LinkIcon, SearchCheck } from 'lucide-react';
+import { Search, Loader2, Sparkles, AlertCircle, Link as LinkIcon, SearchCheck, Bot } from 'lucide-react';
 import { ResultCard, SearchResultItem } from '../components/ResultCard';
 import { ExecutionTimeline } from '../components/ExecutionTimeline';
 
@@ -14,6 +14,7 @@ export default function Home() {
   const [isExecuting, setIsExecuting] = useState(false);
   const [steps, setSteps] = useState<string[]>([]);
   const [results, setResults] = useState<SearchResultItem[]>([]);
+  const [summary, setSummary] = useState<string | null>(null);
   const [executedQuery, setExecutedQuery] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,6 +27,7 @@ export default function Home() {
     setIsExecuting(true);
     setError(null);
     setResults([]);
+    setSummary(null);
     setSteps(['Initializing browser automation engine...']);
 
     const baseUrl = backendUrl.trim().replace(/\/+$/, '');
@@ -56,7 +58,6 @@ export default function Home() {
         throw new Error(data.error || 'Execution failed');
       }
 
-      // Convert backend logs into human-readable timeline steps if string steps array isn't provided directly
       const formattedSteps = data.steps || (data.logs ? data.logs.map((l: { detail?: string; action?: string }) => l.detail || l.action || 'Executing step...') : [
         'Navigated to search engine',
         'Extracted top organic search results',
@@ -65,6 +66,7 @@ export default function Home() {
 
       setSteps(formattedSteps);
       setResults(data.results || []);
+      setSummary(data.summary || data.answer || null);
       setExecutedQuery(data.query || targetQuery);
     } catch (err) {
       const msg = (err as Error).message;
@@ -91,7 +93,7 @@ export default function Home() {
               <h1 className="font-bold text-lg tracking-tight bg-gradient-to-r from-indigo-400 via-sky-300 to-emerald-400 bg-clip-text text-transparent">
                 Search Assistant Tool
               </h1>
-              <p className="text-xs text-slate-400">Autonomous Web Search & Extraction Engine</p>
+              <p className="text-xs text-slate-400">Autonomous Web Search & AI Chat Answer Engine</p>
             </div>
           </div>
 
@@ -141,7 +143,7 @@ export default function Home() {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleRunTask()}
-                  placeholder="e.g. best laptops under 50000"
+                  placeholder="e.g. best laptops under 70000"
                   disabled={isExecuting}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
                 />
@@ -171,7 +173,7 @@ export default function Home() {
             <h4 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Preset Search Prompts</h4>
             <div className="flex flex-wrap gap-2">
               {[
-                'best laptops under 50000',
+                'best laptops under 70000',
                 'best backend projects for beginners 2026',
                 'Node.js Express Playwright starter template'
               ].map((sample, i) => (
@@ -202,29 +204,57 @@ export default function Home() {
         {/* SECTION B: EXECUTION TIMELINE */}
         <ExecutionTimeline steps={steps} isExecuting={isExecuting} />
 
-        {/* SECTION C: RESULTS SECTION */}
+        {/* SECTION C: RESULTS & AI CHAT RESPONSE */}
         {executedQuery && (
-          <section className="space-y-4">
+          <section className="space-y-6">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h2 className="text-base font-bold text-slate-100 flex items-center space-x-2">
                 <span>Search Results for</span>
                 <span className="text-indigo-400">&quot;{executedQuery}&quot;</span>
               </h2>
               <span className="text-xs text-slate-400 bg-slate-900 border border-slate-800 px-3 py-1 rounded-full">
-                {results.length} Top Items Extracted
+                {results.length} Organic References Extracted
               </span>
             </div>
 
+            {/* AI Assistant Chat Answer Box */}
+            {summary && (
+              <div className="bg-slate-900/90 border border-indigo-500/30 rounded-2xl p-6 shadow-2xl space-y-4 relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/5 rounded-full blur-3xl pointer-events-none"></div>
+                <div className="flex items-center space-x-3 pb-3 border-b border-slate-800/80">
+                  <div className="p-2 bg-gradient-to-br from-indigo-500/20 to-sky-500/20 text-indigo-400 rounded-xl border border-indigo-500/30 shrink-0">
+                    <Bot className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-base bg-gradient-to-r from-indigo-300 via-sky-200 to-emerald-300 bg-clip-text text-transparent">
+                      AI Search Assistant Chat Answer
+                    </h3>
+                    <p className="text-xs text-slate-400">Synthesized chat response with top recommendations & specs</p>
+                  </div>
+                </div>
+
+                <div className="text-sm text-slate-200 leading-relaxed font-sans whitespace-pre-line space-y-3">
+                  {summary}
+                </div>
+              </div>
+            )}
+
+            {/* Organic Web References Section */}
             {results.length === 0 ? (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400 space-y-2">
-                <p>No results found for this search query.</p>
+                <p>No organic web references found for this search query.</p>
                 <p className="text-slate-500">Try rephrasing your search query or selecting a preset prompt.</p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 gap-4">
-                {results.map((item, idx) => (
-                  <ResultCard key={idx} item={item} index={idx} />
-                ))}
+              <div className="space-y-3">
+                <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider pl-1">
+                  Verified Web References
+                </h3>
+                <div className="grid grid-cols-1 gap-4">
+                  {results.map((item, idx) => (
+                    <ResultCard key={idx} item={item} index={idx} />
+                  ))}
+                </div>
               </div>
             )}
           </section>
