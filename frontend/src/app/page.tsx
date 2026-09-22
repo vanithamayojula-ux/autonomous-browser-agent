@@ -1,9 +1,8 @@
-// Autonomous Web Search Assistant Tool - v1.0.3 (AI Chat Answer Synthesis Engine)
+// Autonomous Web Search Assistant Tool - v1.0.4 (Natural Chat UI & Verified References Cleaned)
 'use client';
 
 import React, { useState } from 'react';
-import { Search, Loader2, Sparkles, AlertCircle, Link as LinkIcon, SearchCheck, Bot } from 'lucide-react';
-import { ResultCard, SearchResultItem } from '../components/ResultCard';
+import { Search, Loader2, Sparkles, AlertCircle, Link as LinkIcon, SearchCheck, Bot, User, Copy, Check } from 'lucide-react';
 import { ExecutionTimeline } from '../components/ExecutionTimeline';
 
 export default function Home() {
@@ -13,10 +12,10 @@ export default function Home() {
   );
   const [isExecuting, setIsExecuting] = useState(false);
   const [steps, setSteps] = useState<string[]>([]);
-  const [results, setResults] = useState<SearchResultItem[]>([]);
   const [summary, setSummary] = useState<string | null>(null);
   const [executedQuery, setExecutedQuery] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const handleRunTask = async (queryToRun?: string) => {
     const targetQuery = (queryToRun || query).trim();
@@ -26,7 +25,6 @@ export default function Home() {
 
     setIsExecuting(true);
     setError(null);
-    setResults([]);
     setSummary(null);
     setSteps(['Initializing browser automation engine...']);
 
@@ -60,12 +58,11 @@ export default function Home() {
 
       const formattedSteps = data.steps || (data.logs ? data.logs.map((l: { detail?: string; action?: string }) => l.detail || l.action || 'Executing step...') : [
         'Navigated to search engine',
-        'Extracted top organic search results',
-        'Synthesized result cards'
+        'Extracted web content',
+        'Synthesized chat response'
       ]);
 
       setSteps(formattedSteps);
-      setResults(data.results || []);
       setSummary(data.summary || data.answer || null);
       setExecutedQuery(data.query || targetQuery);
     } catch (err) {
@@ -80,20 +77,27 @@ export default function Home() {
     }
   };
 
+  const handleCopyAnswer = () => {
+    if (!summary) return;
+    navigator.clipboard.writeText(summary);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/60 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+        <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center space-x-3">
             <div className="p-2 bg-indigo-600/20 text-indigo-400 rounded-xl border border-indigo-500/30">
               <SearchCheck className="w-6 h-6" />
             </div>
             <div>
               <h1 className="font-bold text-lg tracking-tight bg-gradient-to-r from-indigo-400 via-sky-300 to-emerald-400 bg-clip-text text-transparent">
-                Search Assistant Tool
+                Search Assistant AI
               </h1>
-              <p className="text-xs text-slate-400">Autonomous Web Search & AI Chat Answer Engine</p>
+              <p className="text-xs text-slate-400">Autonomous Web Search & Conversational Chat Agent</p>
             </div>
           </div>
 
@@ -105,9 +109,9 @@ export default function Home() {
       </header>
 
       {/* Main Content Dashboard */}
-      <div className="max-w-6xl mx-auto px-6 py-8 flex-1 w-full space-y-8">
+      <div className="max-w-4xl mx-auto px-6 py-8 flex-1 w-full space-y-8">
         
-        {/* SECTION A: INPUT SECTION */}
+        {/* INPUT SECTION */}
         <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-5">
           {/* Backend Service URL Settings */}
           <div className="space-y-1.5">
@@ -131,7 +135,7 @@ export default function Home() {
           <div className="space-y-2">
             <label htmlFor="query" className="text-sm font-semibold text-slate-200 flex items-center space-x-2">
               <Sparkles className="w-4 h-4 text-indigo-400" />
-              <span>Enter Search Query</span>
+              <span>Ask Search Assistant</span>
             </label>
             <div className="flex flex-col sm:flex-row gap-3">
               <div className="relative flex-1">
@@ -143,7 +147,7 @@ export default function Home() {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleRunTask()}
-                  placeholder="e.g. best laptops under 70000"
+                  placeholder="Ask anything, e.g. best laptops under 70000..."
                   disabled={isExecuting}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
                 />
@@ -156,12 +160,12 @@ export default function Home() {
                 {isExecuting ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Running Agent...</span>
+                    <span>Thinking...</span>
                   </>
                 ) : (
                   <>
                     <Search className="w-4 h-4" />
-                    <span>Run Search Agent</span>
+                    <span>Ask AI Agent</span>
                   </>
                 )}
               </button>
@@ -201,59 +205,68 @@ export default function Home() {
           </div>
         )}
 
-        {/* SECTION B: EXECUTION TIMELINE */}
+        {/* EXECUTION TIMELINE */}
         <ExecutionTimeline steps={steps} isExecuting={isExecuting} />
 
-        {/* SECTION C: RESULTS & AI CHAT RESPONSE */}
+        {/* NATURAL CHAT CONVERSATION THREAD */}
         {executedQuery && (
-          <section className="space-y-6">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h2 className="text-base font-bold text-slate-100 flex items-center space-x-2">
-                <span>Search Results for</span>
-                <span className="text-indigo-400">&quot;{executedQuery}&quot;</span>
-              </h2>
-              <span className="text-xs text-slate-400 bg-slate-900 border border-slate-800 px-3 py-1 rounded-full">
-                {results.length} Organic References Extracted
-              </span>
+          <section className="space-y-6 pt-4">
+            
+            {/* 1. User Message Bubble */}
+            <div className="flex justify-end">
+              <div className="flex items-start space-x-3 max-w-2xl">
+                <div className="bg-indigo-600 text-white p-4 rounded-2xl rounded-tr-none shadow-lg space-y-1">
+                  <div className="flex items-center space-x-2 text-[11px] font-semibold opacity-80">
+                    <User className="w-3.5 h-3.5" />
+                    <span>You</span>
+                  </div>
+                  <p className="text-sm text-white font-medium">{executedQuery}</p>
+                </div>
+              </div>
             </div>
 
-            {/* AI Assistant Chat Answer Box */}
+            {/* 2. AI Assistant Response Message Bubble */}
             {summary && (
-              <div className="bg-slate-900/90 border border-indigo-500/30 rounded-2xl p-6 shadow-2xl space-y-4 relative overflow-hidden">
-                <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/5 rounded-full blur-3xl pointer-events-none"></div>
-                <div className="flex items-center space-x-3 pb-3 border-b border-slate-800/80">
-                  <div className="p-2 bg-gradient-to-br from-indigo-500/20 to-sky-500/20 text-indigo-400 rounded-xl border border-indigo-500/30 shrink-0">
-                    <Bot className="w-5 h-5" />
+              <div className="flex justify-start">
+                <div className="flex items-start space-x-3 max-w-3xl w-full">
+                  <div className="p-2.5 bg-gradient-to-br from-indigo-500/20 to-sky-500/20 text-indigo-400 rounded-2xl border border-indigo-500/30 shrink-0 mt-1 shadow-md">
+                    <Bot className="w-6 h-6" />
                   </div>
-                  <div>
-                    <h3 className="font-bold text-base bg-gradient-to-r from-indigo-300 via-sky-200 to-emerald-300 bg-clip-text text-transparent">
-                      AI Search Assistant Chat Answer
-                    </h3>
-                    <p className="text-xs text-slate-400">Synthesized chat response with top recommendations & specs</p>
+
+                  <div className="flex-1 bg-slate-900 border border-slate-800 rounded-3xl rounded-tl-none p-6 shadow-2xl space-y-4">
+                    <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+                      <div className="flex items-center space-x-2">
+                        <span className="font-semibold text-sm bg-gradient-to-r from-indigo-300 via-sky-200 to-emerald-300 bg-clip-text text-transparent">
+                          Search Assistant AI
+                        </span>
+                        <span className="text-[10px] text-slate-400 bg-slate-950 px-2 py-0.5 rounded-full border border-slate-800">
+                          Web Search Answer
+                        </span>
+                      </div>
+
+                      <button
+                        onClick={handleCopyAnswer}
+                        className="flex items-center space-x-1.5 text-xs text-slate-400 hover:text-slate-200 bg-slate-950 hover:bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-800 transition"
+                        title="Copy Answer to Clipboard"
+                      >
+                        {copied ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            <span className="text-emerald-400 font-medium">Copied</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>Copy Answer</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    <div className="text-sm text-slate-200 leading-relaxed font-sans whitespace-pre-line space-y-3">
+                      {summary}
+                    </div>
                   </div>
-                </div>
-
-                <div className="text-sm text-slate-200 leading-relaxed font-sans whitespace-pre-line space-y-3">
-                  {summary}
-                </div>
-              </div>
-            )}
-
-            {/* Organic Web References Section */}
-            {results.length === 0 ? (
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-center text-xs text-slate-400 space-y-2">
-                <p>No organic web references found for this search query.</p>
-                <p className="text-slate-500">Try rephrasing your search query or selecting a preset prompt.</p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider pl-1">
-                  Verified Web References
-                </h3>
-                <div className="grid grid-cols-1 gap-4">
-                  {results.map((item, idx) => (
-                    <ResultCard key={idx} item={item} index={idx} />
-                  ))}
                 </div>
               </div>
             )}
