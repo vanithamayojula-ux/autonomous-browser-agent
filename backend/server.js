@@ -490,39 +490,49 @@ function deduplicateResults(items) {
   });
 }
 
+// Shared Task Execution Handler & Unified Route Entrypoint
 async function handleTaskExecution(req, res) {
-  const rawQuery = req.body?.query || req.body?.objective;
+  const startTime = Date.now();
+  const rawQuery = req.query?.q || req.query?.query || req.body?.query || req.body?.q || req.body?.objective;
 
   if (!rawQuery || typeof rawQuery !== "string" || !rawQuery.trim()) {
     return res.status(400).json({
       success: false,
-      error: 'Missing or invalid "query" or "objective" string in request body.'
+      error: 'Missing or invalid "query" or "objective" string in request parameter or body.'
     });
   }
 
+  const cleanQuery = sanitizeQuery(rawQuery);
   const steps = [];
 
   try {
-    const results = await runSearchPipeline(rawQuery, steps);
-    const summary = await synthesizeChatAnswer(rawQuery, results);
-    const products = buildProductCatalog(rawQuery, results);
+    const results = await runSearchPipeline(cleanQuery, steps);
+    const summary = await synthesizeChatAnswer(cleanQuery, results);
+    const products = buildProductCatalog(cleanQuery, results);
+    const elapsedMs = Date.now() - startTime;
 
     return res.status(200).json({
       success: true,
-      query: rawQuery,
+      query: cleanQuery,
+      enhancedQuery: `${cleanQuery} India 2026 reviews buying guide`,
       engine: "Rich Product Search Pipeline",
       products,
       results,
       summary,
       steps,
-      result: `Found ${products.length} structured product cards for "${rawQuery}"`
+      result: `Found ${products.length} structured product cards for "${cleanQuery}"`,
+      meta: {
+        elapsedMs,
+        retries: 0,
+        rawCount: results.length
+      }
     });
   } catch (err) {
     console.error(`[Execution Error]: ${err.message}`);
     steps.push(`Execution error: ${err.message}`);
     return res.status(500).json({
       success: false,
-      query: rawQuery,
+      query: cleanQuery,
       products: [],
       results: [],
       steps,
@@ -531,56 +541,45 @@ async function handleTaskExecution(req, res) {
   }
 }
 
-const { executeAutonomousSearchPipeline } = require("../services/extractor/playwrightExtractor");
-
-app.get("/search", async (req, res) => {
-  const query = req.query.q || req.query.query;
-  const n = parseInt(req.query.n || "5", 10);
-
-  if (!query || typeof query !== "string" || !query.trim()) {
-    return res.status(400).json({ error: 'Missing or invalid query parameter "q"' });
-  }
-
-  try {
-    const data = await executeAutonomousSearchPipeline(query.trim(), n);
-    return res.status(200).json(data);
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-app.post("/search", async (req, res) => {
-  const query = req.body?.q || req.body?.query;
-  const n = parseInt(req.body?.n || "5", 10);
-
-  if (!query || typeof query !== "string" || !query.trim()) {
-    return res.status(400).json({ error: 'Missing or invalid "query" string in request body' });
-  }
-
-  try {
-    const data = await executeAutonomousSearchPipeline(query.trim(), n);
-    return res.status(200).json(data);
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-});
+app.get("/search", handleTaskExecution);
+app.post("/search", handleTaskExecution);
+app.post("/execute", handleTaskExecution);
+app.post("/run-task", handleTaskExecution);
+app.post("/api/agent/run", handleTaskExecution);
 
 app.post("/analyze", async (req, res) => {
+  const startTime = Date.now();
   const query = req.body?.query || req.body?.q;
   const items = req.body?.results || req.body?.products || [];
 
   if (!query || typeof query !== "string" || !query.trim()) {
-    return res.status(400).json({ error: 'Missing or invalid "query" string in request body' });
+    return res.status(400).json({
+      success: false,
+      error: 'Missing or invalid "query" string in request body'
+    });
   }
 
   try {
     const summary = await synthesizeChatAnswer(query, items);
     const topChoice = items.length > 0 ? items[0] : null;
+    const elapsedMs = Date.now() - startTime;
 
     return res.status(200).json({
+      success: true,
       query: query,
+      enhancedQuery: `${query} India 2026 reviews buying guide`,
+      engine: "Rich Product Search Pipeline",
       topChoice: topChoice,
+      products: items,
+      results: items,
       summary: summary,
+      steps: ["Analyzed search results and generated top recommendation"],
+      result: `Successfully analyzed ${items.length} search items for "${query}"`,
+      meta: {
+        elapsedMs,
+        retries: 0,
+        rawCount: items.length
+      },
       analysis: items.map((item, idx) => ({
         rank: idx + 1,
         title: item.title,
@@ -590,13 +589,13 @@ app.post("/analyze", async (req, res) => {
       }))
     });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({
+      success: false,
+      query: query,
+      error: err.message
+    });
   }
 });
-
-app.post("/execute", handleTaskExecution);
-app.post("/run-task", handleTaskExecution);
-app.post("/api/agent/run", handleTaskExecution);
 
 const PORT = process.env.PORT || 5000;
 

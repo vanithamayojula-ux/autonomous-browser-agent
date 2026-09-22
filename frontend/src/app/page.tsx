@@ -33,20 +33,26 @@ export default function Home() {
 
     const baseUrl = backendUrl.trim().replace(/\/+$/, '');
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 65000);
+
     try {
       let response = await fetch(`${baseUrl}/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: targetQuery }),
+        signal: controller.signal
       });
 
       if (response.status === 404) {
-        response = await fetch(`${baseUrl}/run-task`, {
-          method: 'POST',
+        response = await fetch(`${baseUrl}/search?q=${encodeURIComponent(targetQuery)}`, {
+          method: 'GET',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ objective: targetQuery }),
+          signal: controller.signal
         });
       }
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -55,23 +61,26 @@ export default function Home() {
 
       const data = await response.json();
 
-      if (!data.success) {
+      if (data.success === false) {
         throw new Error(data.error || 'Execution failed');
       }
 
-      const formattedSteps = data.steps || (data.logs ? data.logs.map((l: { detail?: string; action?: string }) => l.detail || l.action || 'Executing step...') : [
-        'Navigated to search engine',
+      const formattedSteps = data.steps || [
+        'Navigated to primary search engine',
         'Extracted structured product data',
         'Synthesized AI chat response'
-      ]);
+      ];
 
       setSteps(formattedSteps);
       setProducts(data.products || data.results || []);
       setSummary(data.summary || data.answer || null);
       setExecutedQuery(data.query || targetQuery);
     } catch (err) {
+      clearTimeout(timeoutId);
       const msg = (err as Error).message;
-      if (msg.includes('Failed to fetch')) {
+      if (msg.includes('aborted')) {
+        setError(`Request timed out waiting for backend cold start at "${baseUrl}". Please retry.`);
+      } else if (msg.includes('Failed to fetch')) {
         setError(`Failed to fetch results from backend at "${baseUrl}". Ensure backend service is online and CORS is enabled.`);
       } else {
         setError(msg);
