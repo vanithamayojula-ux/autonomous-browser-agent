@@ -1,3 +1,4 @@
+// Autonomous Web Search Assistant Tool - v1.0.2 (Multi-Engine Pipeline)
 'use client';
 
 import React, { useState } from 'react';
