@@ -401,6 +401,53 @@ function fetchDuckDuckGoHtmlGet(query, steps) {
   });
 }
 
+function fetchWikipediaApi(query, steps) {
+  return new Promise((resolve) => {
+    const encoded = encodeURIComponent(query);
+    const targetUrl = `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encoded}&limit=5&namespace=0&format=json`;
+
+    const req = https.get(targetUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AutonomousSearchAgent/1.0'
+      }
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        const items = [];
+        try {
+          const json = JSON.parse(data);
+          if (Array.isArray(json) && json.length >= 4) {
+            const titles = json[1] || [];
+            const snippets = json[2] || [];
+            const urls = json[3] || [];
+
+            titles.forEach((t, i) => {
+              if (t && urls[i] && !isJunkDomain(urls[i])) {
+                items.push({
+                  title: t,
+                  link: urls[i],
+                  snippet: snippets[i] && snippets[i].trim() ? snippets[i].trim() : `Wikipedia article for ${t}`
+                });
+              }
+            });
+          }
+        } catch (e) {}
+        if (items.length > 0) {
+          steps.push(`Secondary HTTP Search (Wikipedia API) returned ${items.length} items.`);
+        }
+        resolve(items);
+      });
+    });
+
+    req.on('error', () => resolve([]));
+    req.setTimeout(3000, () => {
+      req.destroy();
+      resolve([]);
+    });
+  });
+}
+
 async function launchBrowserSafely() {
   const launchOptions = {
     headless: true,
@@ -489,6 +536,13 @@ async function runSearchPipeline(rawQuery, steps) {
   let httpResults = await fetchDuckDuckGoHtmlGet(cleanQuery, steps);
   let filtered = httpResults.filter(item => !isJunkDomain(item.link) && isRelevantResult(item, cleanQuery));
   steps.push(`HTTP Search Filtered results count: ${filtered.length}`);
+
+  if (filtered.length < 3) {
+    const wikiResults = await fetchWikipediaApi(cleanQuery, steps);
+    if (wikiResults.length > 0) {
+      filtered = deduplicateResults([...filtered, ...wikiResults]);
+    }
+  }
 
   if (filtered.length < 3) {
     let browser = null;
