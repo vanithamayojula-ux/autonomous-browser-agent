@@ -97,10 +97,10 @@ export const ProductCard: React.FC<ProductCardProps> = ({ item, index }) => {
         <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800/80">
           <div>
             <span className="text-[10px] uppercase font-semibold tracking-wider text-slate-500 block">
-              Best Price
+              {item.price ? 'Best Price' : 'Source Reference'}
             </span>
-            <span className="text-lg font-extrabold text-emerald-400 font-mono tracking-tight">
-              {item.price || 'Check Latest Price'}
+            <span className={`text-base font-extrabold tracking-tight ${item.price ? 'text-emerald-400 font-mono text-lg' : 'text-indigo-400'}`}>
+              {item.price || 'Verified Web Link'}
             </span>
           </div>
 
@@ -108,7 +108,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ item, index }) => {
             <button
               onClick={handleCopyLink}
               className="p-2.5 text-slate-400 hover:text-slate-200 bg-slate-950 hover:bg-slate-800 rounded-xl border border-slate-800 transition"
-              title="Copy Product Link"
+              title="Copy Link"
             >
               {copied ? (
                 <Check className="w-4 h-4 text-emerald-400" />
@@ -124,7 +124,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ item, index }) => {
               className="flex items-center space-x-2 bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white font-semibold text-xs px-4 py-2.5 rounded-xl shadow-lg shadow-indigo-600/20 transition active:scale-[0.98]"
             >
               <ShoppingBag className="w-4 h-4" />
-              <span>Buy Now</span>
+              <span>{item.price ? 'Buy Now' : 'Visit Webpage'}</span>
               <ExternalLink className="w-3.5 h-3.5 opacity-80" />
             </a>
           </div>

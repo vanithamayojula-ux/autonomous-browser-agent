@@ -112,8 +112,31 @@ function calculateRelevanceScore(title, snippet, rawQuery) {
   return score;
 }
 
-// Structured Product Catalog Builder with 100% Working Live Links
+function getDomainFavicon(link) {
+  try {
+    const hostname = new URL(link).hostname;
+    return `https://www.google.com/s2/favicons?domain=${hostname}&sz=128`;
+  } catch (e) {
+    return "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=500&auto=format&fit=crop";
+  }
+}
+
+function isProductQuery(query) {
+  const qLower = query.toLowerCase();
+  const productKeywords = [
+    "laptop", "notebook", "pc", "computer", "phone", "mobile", "smartphone",
+    "watch", "smartwatch", "shoe", "headphone", "earphone", "tv", "camera",
+    "buy", "price", "cheap", "under", "deal", "discount", "cost", "best laptop", "best phone"
+  ];
+  return productKeywords.some(kw => qLower.includes(kw));
+}
+
+// Structured Product / Web Article Catalog Builder
 function buildProductCatalog(query, searchResults) {
+  if (!searchResults || searchResults.length === 0) {
+    return [];
+  }
+
   const qLower = query.toLowerCase();
 
   const laptopImages = [
@@ -124,7 +147,9 @@ function buildProductCatalog(query, searchResults) {
     "https://images.unsplash.com/photo-1541807084-5c52b6b3adef?w=600&auto=format&fit=crop"
   ];
 
-  if (qLower.includes("laptop") || qLower.includes("notebook") || qLower.includes("computer") || qLower.includes("pc")) {
+  const isShopping = isProductQuery(query);
+
+  if (isShopping && (qLower.includes("laptop") || qLower.includes("notebook") || qLower.includes("pc"))) {
     const rawProducts = [
       {
         title: "Acer Nitro V 15 Gaming Laptop (13th Gen i5, RTX 4050)",
@@ -187,15 +212,30 @@ function buildProductCatalog(query, searchResults) {
   }
 
   return searchResults.slice(0, 5).map((item, index) => {
-    return {
-      title: item.title,
-      image: item.image || laptopImages[index % laptopImages.length] || "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=500&auto=format&fit=crop",
-      link: item.link && !item.link.includes("/dp/") ? item.link : `https://www.amazon.in/s?k=${encodeURIComponent(item.title)}`,
-      price: extractPrice(item.snippet || item.title) || "Check Deal Price",
-      rating: "4.2 / 5 ⭐",
-      specs: extractSpecsFromSnippet(item.snippet, query),
-      description: item.snippet || `Organic web result for ${query}`
-    };
+    const extractedPrice = extractPrice(item.snippet || item.title);
+    const favicon = getDomainFavicon(item.link);
+
+    if (isShopping) {
+      return {
+        title: item.title,
+        image: item.image || favicon,
+        link: item.link && !item.link.includes("/dp/") ? item.link : `https://www.amazon.in/s?k=${encodeURIComponent(item.title)}`,
+        price: extractedPrice || "Check Live Price",
+        rating: "4.2 / 5 ⭐",
+        specs: extractSpecsFromSnippet(item.snippet, query),
+        description: item.snippet || `Product result for ${query}`
+      };
+    } else {
+      return {
+        title: item.title,
+        image: favicon,
+        link: item.link,
+        price: null,
+        rating: null,
+        specs: extractSpecsFromSnippet(item.snippet, query),
+        description: item.snippet || `Web reference for ${query}`
+      };
+    }
   });
 }
 
