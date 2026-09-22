@@ -92,7 +92,7 @@ function isRelevantResult(item, rawQuery) {
 
   const combined = (item.title + " " + (item.snippet || "") + " " + item.link).toLowerCase();
 
-  if (combined.includes("dictionary") || combined.includes("meaning") || combined.includes("undertaking")) {
+  if (combined.includes("dictionary") || combined.includes("meaning") || combined.includes("undertaking") || combined.includes("oltana")) {
     return false;
   }
 
@@ -108,6 +108,67 @@ function calculateRelevanceScore(title, snippet, rawQuery) {
   });
   if (combined.includes("laptop") || combined.includes("notebook") || combined.includes("pc")) score += 3;
   return score;
+}
+
+function fetchDuckDuckGoHtmlGet(query, steps) {
+  return new Promise((resolve) => {
+    steps.push(`HTTP Search Engine: Executing web search for "${query}"`);
+    const encoded = encodeURIComponent(query);
+    const targetUrl = `https://html.duckduckgo.com/html/?q=${encoded}&kl=us-en`;
+
+    const req = https.get(targetUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9'
+      }
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        const items = [];
+        try {
+          const blocks = data.split(/<div[^>]*class=["'](?:result|results_links)[^"']*["']/i);
+
+          blocks.slice(1).forEach(block => {
+            const titleMatch = block.match(/<a[^>]*class=["']result__a["'][^>]*>(.*?)<\/a>/i);
+            const linkMatch = block.match(/href=["']([^"']+)["']/i);
+            const snippetMatch = block.match(/<a[^>]*class=["']result__snippet["'][^>]*>(.*?)<\/a>/i) ||
+                                 block.match(/class=["']result__snippet["'][^>]*>(.*?)<\/(?:a|td|div)>/i);
+
+            if (titleMatch && linkMatch) {
+              const title = titleMatch[1].replace(/<[^>]+>/g, '').replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').trim();
+              let link = decodeSearchLink(linkMatch[1]);
+
+              let snippet = snippetMatch 
+                ? snippetMatch[1].replace(/<[^>]+>/g, '').replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&').trim() 
+                : `Top result for ${query}: ${title}`;
+
+              if (title && link.startsWith('http') && !link.includes('duckduckgo.com')) {
+                items.push({ title, link, snippet });
+              }
+            }
+          });
+        } catch (err) {
+          console.warn(`[HTTP Search Parse Error]: ${err.message}`);
+        }
+
+        steps.push(`HTTP Search Engine extracted results: ${items.length}`);
+        resolve(items);
+      });
+    });
+
+    req.on('error', (err) => {
+      console.warn(`[HTTP Search Request Error]: ${err.message}`);
+      steps.push(`HTTP Search Engine failed: ${err.message}`);
+      resolve([]);
+    });
+
+    req.setTimeout(8000, () => {
+      req.destroy();
+      resolve([]);
+    });
+  });
 }
 
 async function launchBrowserSafely() {
@@ -141,7 +202,7 @@ async function launchBrowserSafely() {
 
 async function scrapeBing(page, query, steps) {
   const encodedQuery = encodeURIComponent(query);
-  const url = `https://www.bing.com/search?q=${encodedQuery}`;
+  const url = `https://www.bing.com/search?q=${encodedQuery}&setlang=en-us&cc=US`;
 
   console.log(`[Bing Engine] Navigating to: ${url}`);
   steps.push(`Navigated to Bing search URL: ${url}`);
@@ -191,233 +252,39 @@ async function scrapeBing(page, query, steps) {
   return scraped;
 }
 
-async function scrapeGoogle(page, query, steps) {
-  const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-  console.log(`[Google Engine] Navigating to: ${url}`);
-  steps.push(`Fallback: Navigated to Google search URL: ${url}`);
-
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
-
-  try {
-    await page.waitForSelector('div.g, .tF2Cxc, div.MjjYud', { timeout: 6000 });
-  } catch (err) {}
-
-  let scraped = [];
-  try {
-    scraped = await page.evaluate(() => {
-      const items = [];
-      const rows = document.querySelectorAll('div.g, .tF2Cxc, div.MjjYud');
-
-      rows.forEach((row) => {
-        const titleEl = row.querySelector('h3') || row.querySelector('a h3');
-        const linkEl = row.querySelector('a[href^="http"]');
-        const snippetEl = row.querySelector('.VwiC3b') || row.querySelector('.IsZvec') || row.querySelector('.yD2vf') || row.querySelector('div[style*="line-clamp"]');
-
-        const title = titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : '';
-        const link = linkEl ? (linkEl.getAttribute('href') || linkEl.href || '') : '';
-        const snippet = snippetEl ? (snippetEl.innerText || snippetEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
-
-        if (title && link && link.startsWith('http') && !link.includes('google.com/search')) {
-          items.push({ title, link, snippet });
-        }
-      });
-
-      return items;
-    });
-  } catch (e) {
-    console.warn(`[Google evaluate error]: ${e.message}`);
-  }
-
-  scraped.forEach(item => {
-    item.link = decodeSearchLink(item.link);
-  });
-
-  steps.push(`Google scraped results: ${scraped.length}`);
-  return scraped;
-}
-
-async function scrapeDuckDuckGo(page, query, steps) {
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  console.log(`[DuckDuckGo Fallback] Navigating to: ${url}`);
-  steps.push(`Fallback: Navigated to DuckDuckGo search URL: ${url}`);
-
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
-
-  let scraped = [];
-  try {
-    scraped = await page.evaluate(() => {
-      const items = [];
-      const rows = document.querySelectorAll('.result, .result__body');
-      rows.forEach(row => {
-        const a = row.querySelector('.result__title a') || row.querySelector('a.result__a');
-        const snippetEl = row.querySelector('.result__snippet');
-        if (a) {
-          const title = (a.textContent || '').trim();
-          let link = a.getAttribute('href') || '';
-          const snippet = snippetEl ? (snippetEl.textContent || '').trim() : '';
-          if (title && link) {
-            items.push({ title, link, snippet });
-          }
-        }
-      });
-      return items;
-    });
-  } catch (e) {
-    console.warn(`[DuckDuckGo evaluate error]: ${e.message}`);
-  }
-
-  scraped.forEach(item => {
-    item.link = decodeSearchLink(item.link);
-  });
-
-  steps.push(`DuckDuckGo scraped results: ${scraped.length}`);
-  return scraped;
-}
-
-function fetchDirectSearchFallback(query, steps) {
-  return new Promise((resolve) => {
-    steps.push(`Direct HTTP Engine: Fetching lightweight web search for "${query}"`);
-    const encoded = encodeURIComponent(query);
-    const postData = `q=${encoded}`;
-
-    const options = {
-      hostname: 'lite.duckduckgo.com',
-      port: 443,
-      path: '/lite/',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(postData),
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9'
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        const items = [];
-        try {
-          const linkRegex = /<a[^>]+href=["']([^"']+)["'][^>]*class=["']result-link["'][^>]*>(.*?)<\/a>/gi;
-          const snippetRegex = /<td[^>]+class=["']result-snippet["'][^>]*>(.*?)<\/td>/gi;
-
-          let linkMatch;
-          const links = [];
-          while ((linkMatch = linkRegex.exec(data)) !== null) {
-            let rawUrl = linkMatch[1];
-            let rawTitle = linkMatch[2].replace(/<[^>]+>/g, '').trim();
-            links.push({ title: rawTitle, link: decodeSearchLink(rawUrl) });
-          }
-
-          let snippetMatch;
-          const snippets = [];
-          while ((snippetMatch = snippetRegex.exec(data)) !== null) {
-            snippets.push(snippetMatch[1].replace(/<[^>]+>/g, '').trim());
-          }
-
-          for (let i = 0; i < links.length; i++) {
-            items.push({
-              title: links[i].title,
-              link: links[i].link,
-              snippet: snippets[i] || `Organic result for ${query}`
-            });
-          }
-        } catch (err) {
-          console.warn(`[HTTP Direct Search Parse Error]: ${err.message}`);
-        }
-
-        steps.push(`Direct HTTP Engine extracted results: ${items.length}`);
-        resolve(items);
-      });
-    });
-
-    req.on('error', (err) => {
-      console.warn(`[HTTP Direct Search Request Error]: ${err.message}`);
-      steps.push(`Direct HTTP Engine failed: ${err.message}`);
-      resolve([]);
-    });
-
-    req.setTimeout(8000, () => {
-      req.destroy();
-      resolve([]);
-    });
-
-    req.write(postData);
-    req.end();
-  });
-}
-
 async function runSearchPipeline(rawQuery, steps) {
-  let browser = null;
-  let filtered = [];
-
   const cleanQuery = sanitizeQuery(rawQuery);
   steps.push(`Query: "${cleanQuery}"`);
 
-  let searchTarget = cleanQuery;
-  if (/^(best|top)\s+/i.test(cleanQuery)) {
-    searchTarget = cleanQuery.replace(/^(best|top)\s+/i, "").trim();
-  }
-
-  try {
-    browser = await launchBrowserSafely();
-    const context = await browser.newContext({
-      viewport: { width: 1280, height: 800 },
-      locale: "en-US",
-      timezoneId: "America/New_York",
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      extraHTTPHeaders: {
-        "Accept-Language": "en-US,en;q=0.9",
-        "Upgrade-Insecure-Requests": "1"
-      }
-    });
-
-    const page = await context.newPage();
-
-    let scraped = await scrapeBing(page, searchTarget, steps);
-    filtered = scraped.filter(item => !isJunkDomain(item.link) && isRelevantResult(item, cleanQuery));
-    steps.push(`Bing Filtered results count: ${filtered.length}`);
-
-    if (filtered.length < 3) {
-      steps.push(`Failsafe 1: Retrying Bing with raw query: "${cleanQuery}"`);
-      const retryBing = await scrapeBing(page, cleanQuery, steps);
-      const newFiltered = retryBing.filter(item => !isJunkDomain(item.link) && isRelevantResult(item, cleanQuery));
-      filtered = deduplicateResults([...filtered, ...newFiltered]);
-      steps.push(`Failsafe 1 Filtered total: ${filtered.length}`);
-    }
-
-    if (filtered.length < 3) {
-      steps.push(`Failsafe 2: Triggering Google search fallback for: "${cleanQuery}"`);
-      const googleScraped = await scrapeGoogle(page, cleanQuery, steps);
-      const googleFiltered = googleScraped.filter(item => !isJunkDomain(item.link) && isRelevantResult(item, cleanQuery));
-      filtered = deduplicateResults([...filtered, ...googleFiltered]);
-      steps.push(`Failsafe 2 Filtered total: ${filtered.length}`);
-    }
-
-    if (filtered.length < 3) {
-      steps.push(`Failsafe 3: Triggering DuckDuckGo fallback for: "${cleanQuery}"`);
-      const ddgScraped = await scrapeDuckDuckGo(page, cleanQuery, steps);
-      const ddgFiltered = ddgScraped.filter(item => !isJunkDomain(item.link) && isRelevantResult(item, cleanQuery));
-      filtered = deduplicateResults([...filtered, ...ddgFiltered]);
-      steps.push(`Failsafe 3 Filtered total: ${filtered.length}`);
-    }
-  } catch (browserErr) {
-    console.warn(`[Browser Pipeline Warning]: ${browserErr.message}`);
-    steps.push(`Browser automation warning: ${browserErr.message}`);
-  } finally {
-    if (browser) {
-      await browser.close().catch(() => {});
-    }
-  }
+  let httpResults = await fetchDuckDuckGoHtmlGet(cleanQuery, steps);
+  let filtered = httpResults.filter(item => !isJunkDomain(item.link) && isRelevantResult(item, cleanQuery));
+  steps.push(`HTTP Search Filtered results count: ${filtered.length}`);
 
   if (filtered.length < 3) {
-    steps.push(`Failsafe 4: Triggering Direct HTTP Engine search fallback...`);
-    const httpResults = await fetchDirectSearchFallback(cleanQuery, steps);
-    const httpFiltered = httpResults.filter(item => !isJunkDomain(item.link) && isRelevantResult(item, cleanQuery));
-    filtered = deduplicateResults([...filtered, ...httpFiltered]);
-    steps.push(`Failsafe 4 Filtered total: ${filtered.length}`);
+    let browser = null;
+    try {
+      steps.push(`Triggering Playwright browser search scraper for "${cleanQuery}"...`);
+      browser = await launchBrowserSafely();
+      const context = await browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        locale: "en-US",
+        timezoneId: "America/New_York",
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+      });
+
+      const page = await context.newPage();
+      const bingScraped = await scrapeBing(page, cleanQuery, steps);
+      const bingFiltered = bingScraped.filter(item => !isJunkDomain(item.link) && isRelevantResult(item, cleanQuery));
+      filtered = deduplicateResults([...filtered, ...bingFiltered]);
+      steps.push(`Combined Filtered total: ${filtered.length}`);
+    } catch (browserErr) {
+      console.warn(`[Browser Pipeline Warning]: ${browserErr.message}`);
+      steps.push(`Browser automation warning: ${browserErr.message}`);
+    } finally {
+      if (browser) {
+        await browser.close().catch(() => {});
+      }
+    }
   }
 
   if (filtered.length > 0) {
