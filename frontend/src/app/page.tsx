@@ -1,8 +1,9 @@
-// Autonomous Web Search Assistant Tool - v1.0.4 (Natural Chat UI & Verified References Cleaned)
+// Autonomous Web Search Assistant Tool - v1.1.0 (Rich Product Card System)
 'use client';
 
 import React, { useState } from 'react';
-import { Search, Loader2, Sparkles, AlertCircle, Link as LinkIcon, SearchCheck, Bot, User, Copy, Check } from 'lucide-react';
+import { Search, Loader2, Sparkles, AlertCircle, Link as LinkIcon, SearchCheck, Bot, User, Copy, Check, ShoppingBag } from 'lucide-react';
+import { ProductCard, ProductItem } from '../components/ProductCard';
 import { ExecutionTimeline } from '../components/ExecutionTimeline';
 
 export default function Home() {
@@ -12,6 +13,7 @@ export default function Home() {
   );
   const [isExecuting, setIsExecuting] = useState(false);
   const [steps, setSteps] = useState<string[]>([]);
+  const [products, setProducts] = useState<ProductItem[]>([]);
   const [summary, setSummary] = useState<string | null>(null);
   const [executedQuery, setExecutedQuery] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -25,8 +27,9 @@ export default function Home() {
 
     setIsExecuting(true);
     setError(null);
+    setProducts([]);
     setSummary(null);
-    setSteps(['Initializing browser automation engine...']);
+    setSteps(['Initializing browser automation & product extraction engine...']);
 
     const baseUrl = backendUrl.trim().replace(/\/+$/, '');
 
@@ -58,11 +61,12 @@ export default function Home() {
 
       const formattedSteps = data.steps || (data.logs ? data.logs.map((l: { detail?: string; action?: string }) => l.detail || l.action || 'Executing step...') : [
         'Navigated to search engine',
-        'Extracted web content',
-        'Synthesized chat response'
+        'Extracted structured product data',
+        'Synthesized AI chat response'
       ]);
 
       setSteps(formattedSteps);
+      setProducts(data.products || []);
       setSummary(data.summary || data.answer || null);
       setExecutedQuery(data.query || targetQuery);
     } catch (err) {
@@ -97,7 +101,7 @@ export default function Home() {
               <h1 className="font-bold text-lg tracking-tight bg-gradient-to-r from-indigo-400 via-sky-300 to-emerald-400 bg-clip-text text-transparent">
                 Search Assistant AI
               </h1>
-              <p className="text-xs text-slate-400">Autonomous Web Search & Conversational Chat Agent</p>
+              <p className="text-xs text-slate-400">Autonomous Web Search & Rich Product Extraction Engine</p>
             </div>
           </div>
 
@@ -147,7 +151,7 @@ export default function Home() {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleRunTask()}
-                  placeholder="Ask anything, e.g. best laptops under 70000..."
+                  placeholder="e.g. best laptops under 70000"
                   disabled={isExecuting}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition"
                 />
@@ -160,12 +164,12 @@ export default function Home() {
                 {isExecuting ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Thinking...</span>
+                    <span>Searching Products...</span>
                   </>
                 ) : (
                   <>
                     <Search className="w-4 h-4" />
-                    <span>Ask AI Agent</span>
+                    <span>Search Products</span>
                   </>
                 )}
               </button>
@@ -208,9 +212,9 @@ export default function Home() {
         {/* EXECUTION TIMELINE */}
         <ExecutionTimeline steps={steps} isExecuting={isExecuting} />
 
-        {/* NATURAL CHAT CONVERSATION THREAD */}
+        {/* RESULTS SECTION */}
         {executedQuery && (
-          <section className="space-y-6 pt-4">
+          <section className="space-y-8 pt-4">
             
             {/* 1. User Message Bubble */}
             <div className="flex justify-end">
@@ -240,7 +244,7 @@ export default function Home() {
                           Search Assistant AI
                         </span>
                         <span className="text-[10px] text-slate-400 bg-slate-950 px-2 py-0.5 rounded-full border border-slate-800">
-                          Web Search Answer
+                          AI Chat Overview
                         </span>
                       </div>
 
@@ -267,6 +271,27 @@ export default function Home() {
                       {summary}
                     </div>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* 3. RICH PRODUCT CARDS SECTION */}
+            {products.length > 0 && (
+              <div className="space-y-4 pt-2">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <h3 className="text-sm font-bold text-slate-100 flex items-center space-x-2">
+                    <ShoppingBag className="w-4 h-4 text-emerald-400" />
+                    <span>Top Recommended Products</span>
+                  </h3>
+                  <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-3 py-1 rounded-full">
+                    {products.length} Products Found
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 gap-5">
+                  {products.map((item, idx) => (
+                    <ProductCard key={idx} item={item} index={idx} />
+                  ))}
                 </div>
               </div>
             )}
