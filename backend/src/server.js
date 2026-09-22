@@ -124,38 +124,38 @@ function buildProductCatalog(query, searchResults) {
   ];
 
   if (qLower.includes("laptop") || qLower.includes("notebook") || qLower.includes("computer") || qLower.includes("pc")) {
-    return [
+    const rawProducts = [
       {
-        title: "Acer Nitro V 15 Gaming Laptop (13th Gen i5)",
+        title: "Acer Nitro V 15 Gaming Laptop (13th Gen i5, RTX 4050)",
         image: laptopImages[0],
-        link: getProductLink(searchResults, "acer", "https://www.amazon.in/dp/B0CHJJZ932"),
+        brand: "acer",
         price: "₹62,990",
         rating: "4.3 / 5 ⭐",
         specs: ["Intel Core i5-13420H", "NVIDIA RTX 4050 6GB", "16GB DDR5 RAM", "512GB Gen 4 SSD", "15.6\" 144Hz FHD IPS"],
         description: "Best gaming performance under ₹70,000 with DLSS 3 support and high-speed DDR5 memory."
       },
       {
-        title: "Lenovo LOQ 15 Gaming Laptop (12th Gen i5)",
+        title: "Lenovo LOQ 15 Gaming Laptop (12th Gen i5, RTX 4050)",
         image: laptopImages[1],
-        link: getProductLink(searchResults, "lenovo", "https://www.flipkart.com/lenovo-loq-intel-core-i5-12th-gen-12450h-16-gb-512-gb-ssd-windows-11-home-6-gb-graphics-nvidia-geforce-rtx-4050-15irh8-gaming-laptop/p/itm7e3f7c4e5e4a0"),
+        brand: "lenovo",
         price: "₹67,990",
         rating: "4.4 / 5 ⭐",
         specs: ["Intel Core i5-12450H", "NVIDIA RTX 4050 6GB", "16GB RAM", "512GB NVMe SSD", "144Hz FHD Display"],
         description: "Premium thermal architecture, MUX Switch support, and robust chassis for long gaming sessions."
       },
       {
-        title: "ASUS TUF Gaming F15 Laptop",
+        title: "ASUS TUF Gaming F15 Laptop (Core i5, RTX 3050)",
         image: laptopImages[2],
-        link: getProductLink(searchResults, "asus", "https://www.amazon.in/ASUS-TUF-Gaming-F15-FX506HF-HN025W/dp/B0C46BLX62"),
+        brand: "asus",
         price: "₹57,990",
         rating: "4.3 / 5 ⭐",
         specs: ["Intel Core i5-11400H", "NVIDIA RTX 3050 4GB", "16GB DDR4 RAM", "512GB SSD", "144Hz FHD Display"],
         description: "Military-grade MIL-STD-810H durability with dual self-cleaning cooling fans."
       },
       {
-        title: "HP Victus 15 Gaming Laptop",
+        title: "HP Victus 15 Gaming Laptop (Ryzen 5, RTX 3050)",
         image: laptopImages[3],
-        link: getProductLink(searchResults, "hp", "https://www.amazon.in/HP-Victus-Gaming-Laptop-15-fa0070TX/dp/B0B6F5V25B"),
+        brand: "hp",
         price: "₹59,990",
         rating: "4.2 / 5 ⭐",
         specs: ["AMD Ryzen 5 5600H", "NVIDIA RTX 3050 4GB", "16GB RAM", "512GB SSD", "15.6\" 144Hz FHD"],
@@ -164,31 +164,38 @@ function buildProductCatalog(query, searchResults) {
       {
         title: "Apple MacBook Air M1 (Silver / Space Grey)",
         image: laptopImages[4],
-        link: getProductLink(searchResults, "apple", "https://www.amazon.in/Apple-MacBook-Chip-13-inch-256GB/dp/B08N5W4NNB"),
+        brand: "apple",
         price: "₹69,990",
         rating: "4.7 / 5 ⭐",
         specs: ["Apple M1 Chip 8-Core CPU", "7-Core GPU", "8GB Unified Memory", "256GB SSD", "18-Hour Battery Life"],
         description: "Top recommendation for coding, college work, and office productivity with silent fanless operation."
       }
     ];
+
+    return rawProducts.map(p => {
+      const match = searchResults.find(r => r.title.toLowerCase().includes(p.brand) || r.link.toLowerCase().includes(p.brand));
+      const liveLink = match && match.link && !match.link.includes("/dp/") && !match.link.includes("/p/")
+        ? match.link 
+        : `https://www.amazon.in/s?k=${encodeURIComponent(p.title)}`;
+
+      return {
+        ...p,
+        link: liveLink
+      };
+    });
   }
 
   return searchResults.slice(0, 5).map((item, index) => {
     return {
       title: item.title,
       image: item.image || laptopImages[index % laptopImages.length] || "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=500&auto=format&fit=crop",
-      link: item.link,
+      link: item.link && !item.link.includes("/dp/") ? item.link : `https://www.amazon.in/s?k=${encodeURIComponent(item.title)}`,
       price: extractPrice(item.snippet || item.title) || "Check Deal Price",
       rating: "4.2 / 5 ⭐",
       specs: extractSpecsFromSnippet(item.snippet, query),
       description: item.snippet || `Organic web result for ${query}`
     };
   });
-}
-
-function getProductLink(searchResults, brand, defaultLink) {
-  const match = searchResults.find(r => r.title.toLowerCase().includes(brand) || r.link.toLowerCase().includes(brand));
-  return match ? match.link : defaultLink;
 }
 
 function extractPrice(text) {
